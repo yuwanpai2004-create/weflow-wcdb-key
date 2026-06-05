@@ -3050,8 +3050,88 @@ class ExportService {
     return match ? match[1] : ''
   }
 
+  private escapeRegExp(value: string): string {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  }
+
+  private cleanSystemXmlText(value: string): string {
+    return this.decodeHtmlEntities(value || '')
+      .replace(/<!\[CDATA\[/g, '')
+      .replace(/\]\]>/g, '')
+      .replace(/<[^>]+>/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+  }
+
+  private extractSystemXmlValue(xml: string, tagName: string): string {
+    const safeTag = this.escapeRegExp(tagName)
+    const cdataRegex = new RegExp(`<${safeTag}\\b[^>]*>\\s*<!\\[CDATA\\[([\\s\\S]*?)\\]\\]>\\s*<\\/${safeTag}>`, 'i')
+    const cdataMatch = cdataRegex.exec(xml)
+    if (cdataMatch?.[1]) {
+      return this.cleanSystemXmlText(cdataMatch[1])
+    }
+
+    const regex = new RegExp(`<${safeTag}\\b[^>]*>([\\s\\S]*?)<\\/${safeTag}>`, 'i')
+    const match = regex.exec(xml)
+    return match?.[1] ? this.cleanSystemXmlText(match[1]) : ''
+  }
+
+  private extractSystemLinkBody(content: string, varName: string): string {
+    const safeName = this.escapeRegExp(varName)
+    const regex = new RegExp(`<link\\b(?=[^>]*\\bname\\s*=\\s*["']${safeName}["'])[^>]*>([\\s\\S]*?)<\\/link>`, 'i')
+    const match = regex.exec(content)
+    return match?.[1] || ''
+  }
+
+  private addSystemName(names: string[], value: string): void {
+    const cleaned = this.cleanSystemXmlText(value)
+    if (cleaned && !names.includes(cleaned)) {
+      names.push(cleaned)
+    }
+  }
+
+  private extractSystemMemberNames(linkBody: string): string[] {
+    const names: string[] = []
+    const memberRegex = /<member\b[^>]*>([\s\S]*?)<\/member>/gi
+    let memberMatch: RegExpExecArray | null
+
+    while ((memberMatch = memberRegex.exec(linkBody)) !== null) {
+      const member = memberMatch[1] || ''
+      const display =
+        this.extractSystemXmlValue(member, 'nickname') ||
+        this.extractSystemXmlValue(member, 'displayname') ||
+        this.extractSystemXmlValue(member, 'name') ||
+        this.extractSystemXmlValue(member, 'username')
+      this.addSystemName(names, display)
+    }
+
+    return names
+  }
+
+  private extractSystemTemplateVariable(content: string, varName: string): string {
+    const linkBody = this.extractSystemLinkBody(content, varName)
+    if (linkBody) {
+      const members = this.extractSystemMemberNames(linkBody)
+      if (members.length > 0) {
+        return members.join('、')
+      }
+
+      for (const tagName of ['nickname', 'displayname', 'name', 'plain', 'title', 'wording', 'username']) {
+        const value = this.extractSystemXmlValue(linkBody, tagName)
+        if (value) return value
+      }
+
+      const linkText = this.cleanSystemXmlText(linkBody)
+      if (linkText) return linkText
+    }
+
+    return this.extractSystemXmlValue(content, varName)
+  }
+
   private cleanSystemMessage(content: string): string {
     if (!content) return '[系统消息]'
+
+    content = this.normalizeAppMessageContent(content)
 
     // 先尝试提取特定的系统消息内容
     // 1. 提取 sysmsg 中的文本内容
@@ -3069,11 +3149,12 @@ class ExportService {
     // 3. 提取 pat 拍一拍消息（sysmsg 内的 template 格式）
     const patMatch = /<template><!\[CDATA\[(.*?)\]\]><\/template>/i.exec(content)
     if (patMatch) {
-      // 移除模板变量占位符
       return patMatch[1]
+        .replace(/\$([^$]+)\$/g, (match, varName) => {
+          return this.extractSystemTemplateVariable(content, String(varName).trim()) || match
+        })
         .replace(/\$\{([^}]+)\}/g, (_, varName) => {
-          const varMatch = new RegExp(`<${varName}><!\\\[CDATA\\\[([^\]]*)\\\]\\\]><\/${varName}>`, 'i').exec(content)
-          return varMatch ? varMatch[1] : ''
+          return this.extractSystemTemplateVariable(content, String(varName).trim())
         })
         .replace(/<[^>]+>/g, '')
         .trim()
