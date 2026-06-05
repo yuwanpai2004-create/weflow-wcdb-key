@@ -2,7 +2,9 @@
 
 这是一个基于 WeFlow 的本地微信聊天记录查看、分析、导出工具，并额外整理了 macOS 微信数据库密钥获取方案。
 
-> 说明：原项目来自 GitHub 用户 [hicccc77](https://github.com/hicccc77) 的 WeFlow。后来原仓库不知为何删除或不可访问；同时原项目内置的 macOS 获取密钥方法在当前微信版本上已经失效。因此我在原项目基础上继续整理，并借助 Codex 完成了 macOS 密钥获取、导入流程和文档层面的优化。
+> 非官方说明：本仓库是 WeFlow 的非官方恢复与研究 fork。原项目来自 GitHub 用户 [hicccc77](https://github.com/hicccc77) 的 WeFlow，绝大多数应用源码归原项目作者贡献。本仓库不代表原作者，不声称获得原作者背书，也不应用于商业分发。更多归属和许可证说明见 [NOTICE.md](NOTICE.md)。
+
+> 背景：原仓库后来不知为何删除或不可访问；同时原项目内置的 macOS 获取密钥方法在当前微信版本上已经失效。因此我在原项目基础上继续整理，并借助 Codex 完成了 macOS 密钥获取、导入流程和文档层面的优化。
 
 ![WeFlow preview](app.jpg)
 
@@ -21,6 +23,14 @@
 - WeFlow 导入密钥时优先读取 `passphrase`，避免误把单库 `enc_key` 当作 WeFlow 解密口令导致错误码 `-3`。
 - 自动选择最近活跃的微信账号目录，减少切换账号后仍导入旧账号密钥的问题。
 - 发布前排除了真实密钥、抓取日志、解密后的数据库和本机配置。
+
+## 合规与社区说明
+
+- 这是非官方 fork，不是原 WeFlow 官方仓库。
+- 本仓库保留原项目作者署名和原许可证文件。
+- 原仓库随本地源码快照保留的许可证是 CC BY-NC-SA 4.0，因此本仓库按“非商业、署名、相同方式共享”的 source-available 项目处理。
+- 因 CC BY-NC-SA 并非典型软件开源许可证，本项目不宣传为 OSI 意义上的标准开源项目。
+- 如果原作者或权利人希望调整署名、链接、内容范围或下架，请通过 issue 或仓库所有者联系。
 
 ## 开发历程
 
@@ -298,4 +308,6 @@ macOS 上抓到的 passphrase 或 `all_keys.json` 不能直接给 Windows 账号
 
 ## License
 
-本仓库保留原项目许可证文件。请在使用、修改、再发布前自行确认原项目及其依赖的许可证要求。
+本仓库保留原项目源码快照中的许可证文件：Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International。
+
+请在使用、修改、再发布前阅读 [LICENSE](LICENSE) 和 [NOTICE.md](NOTICE.md)，并自行确认原项目及其依赖的许可证要求。

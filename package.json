@@ -1,7 +1,7 @@
 {
-  "name": "weflow",
+  "name": "weflow-wcdb-key",
   "version": "4.3.0",
-  "description": "WeFlow",
+  "description": "Unofficial WeFlow preservation and WCDB key research fork",
   "main": "dist-electron/main.js",
   "author": {
     "name": "cc",
@@ -9,9 +9,9 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/hicccc77/WeFlow"
+    "url": "https://github.com/yuwanpai2004-create/weflow-wcdb-key"
   },
-  "//": "二改不应改变此处的作者与应用信息",
+  "//": "Original author metadata is preserved above. This is an unofficial preservation/research fork; see NOTICE.md.",
   "scripts": {
     "postinstall": "electron-builder install-app-deps && node scripts/prepare-electron-runtime.cjs",
     "rebuild": "electron-rebuild",
@@ -76,14 +76,14 @@
     }
   },
   "build": {
-    "appId": "com.WeFlow.app",
+    "appId": "com.yuwanpai.weflow-wcdb-key",
     "publish": {
       "provider": "github",
-      "owner": "hicccc77",
-      "repo": "WeFlow",
+      "owner": "yuwanpai2004-create",
+      "repo": "weflow-wcdb-key",
       "releaseType": "release"
     },
-    "productName": "WeFlow",
+    "productName": "WeFlow WCDB Key Edition",
     "artifactName": "${productName}-${version}-Setup.${ext}",
     "directories": {
       "output": "release"
