@@ -10,6 +10,7 @@ const EXAMPLE_CONFIG_PATH = path.join(__dirname, 'wechat-weekly-report.config.ex
 const DEFAULT_OUTPUT_DIR = path.join(ROOT, 'outputs')
 const DEFAULT_CACHE_PATH = path.join(DEFAULT_OUTPUT_DIR, 'wechat-weekly-report-cache.json')
 const MESSAGE_PAGE_LIMIT = 10000
+const DEFAULT_COMPLETED_MESSAGE_KEYWORD = '感谢您关注天天开源软件，现在拉您进专属技术交流群，有问题欢迎随时咨询~'
 
 function parseArgs(argv) {
   const args = {
@@ -56,6 +57,7 @@ function printHelp() {
   - 默认统计“上周一 00:00:00 到上周日 23:59:59”，适合周一填写上周周报。
   - --week-end 可指定周报日期，也就是表格 A 列的周日日期。
   - 需要先启动 WeFlow、连接对应账号，并在设置中启用 HTTP API 服务。
+  - 完善用户默认通过本周发出的固定话术识别，不依赖好友快照。
   - 一台电脑一次只能登录一个微信时，切换账号后分别用 --account 采集；脚本会缓存并自动合并成一份表。
   - 配置 groupStatsAccountName 后，社群周报和群友互动只统计该账号。
 `)
@@ -198,6 +200,106 @@ async function fetchMessages(account, chatroomId, start, end) {
     offset += batch.length
   }
   return messages
+}
+
+async function fetchMessagesByKeyword(account, talker, keyword, start, end) {
+  const messages = []
+  let offset = 0
+  while (true) {
+    const params = {
+      keyword,
+      start: toYmdCompact(start),
+      end: toYmdCompact(end),
+      limit: MESSAGE_PAGE_LIMIT,
+      offset
+    }
+    if (talker) params.talker = talker
+    const json = await apiGet(account, '/api/v1/messages', params)
+    const batch = Array.isArray(json.messages) ? json.messages : []
+    messages.push(...batch)
+    if (!json.hasMore || batch.length === 0) break
+    offset += batch.length
+  }
+  return messages
+}
+
+function getMessageText(message) {
+  return String(message.parsedContent || message.content || message.rawContent || '')
+}
+
+function isMessageSentByMe(message) {
+  return message.isSend === true || message.isSend === 1 || message.isSend === '1'
+}
+
+function getCompletedMessageKeywords(config) {
+  const configured = Array.isArray(config.completedMessageKeywords)
+    ? config.completedMessageKeywords
+    : [config.completedMessageKeyword]
+  const keywords = configured
+    .map((item) => String(item || '').trim())
+    .filter(Boolean)
+  return keywords.length > 0 ? keywords : [DEFAULT_COMPLETED_MESSAGE_KEYWORD]
+}
+
+async function mapLimit(items, limit, worker) {
+  const results = new Array(items.length)
+  let nextIndex = 0
+  async function runWorker() {
+    while (nextIndex < items.length) {
+      const index = nextIndex
+      nextIndex += 1
+      results[index] = await worker(items[index], index)
+    }
+  }
+  const workers = Array.from({ length: Math.min(Math.max(1, limit), items.length) }, runWorker)
+  await Promise.all(workers)
+  return results
+}
+
+async function findCompletedFriendsBySentMessage(account, contacts, config, range) {
+  const keywords = getCompletedMessageKeywords(config)
+  if (keywords.length === 0) return { contacts: [], keywords }
+  const friends = contacts.filter((contact) => contact?.type === 'friend' && String(contact.username || '').trim())
+  const byUsername = new Map(friends.map((contact) => [String(contact.username || '').trim(), contact]))
+  const concurrency = Math.max(1, Number(config.messageScanConcurrency || 5))
+  const matchedByUsername = new Map()
+
+  let globalSearchSupported = true
+  for (const keyword of keywords) {
+    try {
+      const messages = await fetchMessagesByKeyword(account, '', keyword, range.start, range.end)
+      for (const message of messages) {
+        if (!isMessageSentByMe(message) || !getMessageText(message).includes(keyword)) continue
+        const sessionId = String(message.sessionId || message.talker || message.talkerId || '').trim()
+        const contact = byUsername.get(sessionId)
+        if (contact) matchedByUsername.set(sessionId, contact)
+      }
+    } catch (error) {
+      globalSearchSupported = false
+      console.warn(`提示: ${account.name || account.apiBaseUrl} 当前 HTTP API 不支持全局关键词搜索，将逐个好友会话扫描。`)
+      break
+    }
+  }
+
+  if (globalSearchSupported) {
+    return { contacts: Array.from(matchedByUsername.values()), keywords }
+  }
+
+  await mapLimit(friends, concurrency, async (contact) => {
+    const username = String(contact.username || '').trim()
+    for (const keyword of keywords) {
+      const messages = await fetchMessagesByKeyword(account, username, keyword, range.start, range.end)
+      const hasSentKeyword = messages.some((message) => (
+        isMessageSentByMe(message) && getMessageText(message).includes(keyword)
+      ))
+      if (hasSentKeyword) {
+        matchedByUsername.set(username, contact)
+        return
+      }
+    }
+  })
+
+  return { contacts: Array.from(matchedByUsername.values()), keywords }
 }
 
 function extractTagValues(xml, tagName) {
@@ -346,15 +448,24 @@ function compactFriend(contact) {
 
 async function collectAccount(account, config, range, options = {}) {
   const contacts = await fetchContacts(account)
+  const completedByMessage = await findCompletedFriendsBySentMessage(account, contacts, config, range)
   const firstSeenCache = config.__firstSeenCache || { map: {} }
   const weeklyNew = getWeeklyNewFriendContacts(account, contacts, config, range, firstSeenCache)
-  if (weeklyNew.warning) console.warn(`警告: ${weeklyNew.warning}`)
+  if (weeklyNew.warning) console.warn(`提示: ${weeklyNew.warning}；非完善用户会缺少快照兜底，完善用户仍按固定话术统计。`)
   const weeklyNewFriends = weeklyNew.contacts
   const completed = new Set()
   const incomplete = new Set()
+  const completedMessageUsernames = new Set()
+  for (const friend of completedByMessage.contacts) {
+    const username = String(friend.username || '').trim()
+    if (!username) continue
+    completed.add(username)
+    completedMessageUsernames.add(username)
+  }
   for (const friend of weeklyNewFriends) {
     const username = String(friend.username || '').trim()
     if (!username) continue
+    if (completedMessageUsernames.has(username)) continue
     if (isCompletedFriend(friend, config.completedRemarkKeyword)) completed.add(username)
     else incomplete.add(username)
   }
@@ -403,7 +514,9 @@ async function collectAccount(account, config, range, options = {}) {
     account: getAccountKey(account),
     accountName: account.name || account.apiBaseUrl,
     contacts,
-    weeklyNewFriends: weeklyNewFriends.map(compactFriend).filter((item) => item.username),
+    weeklyNewFriends: [...completedByMessage.contacts, ...weeklyNewFriends].map(compactFriend).filter((item, index, array) => (
+      item.username && array.findIndex((other) => other.username === item.username) === index
+    )),
     completed,
     incomplete,
     groupStats
@@ -471,6 +584,7 @@ function buildRows(config, range, accountResults, groupAccountResult = null) {
   const weekEnd = formatDate(range.end)
   const groups = config.groups || []
   const groupLabels = groups.map((group) => group.label)
+  const groupHeaderBlanks = groupLabels.slice(1).map(() => '')
   const allCompleted = new Set()
   const allIncomplete = new Set()
   const allWeeklyNewFriends = []
@@ -501,6 +615,7 @@ function buildRows(config, range, accountResults, groupAccountResult = null) {
   const incompletePassed = allIncomplete.size
   const passedTotal = completedPassed + incompletePassed
   const friendJoinCount = allJoinedFriends.size
+  const friendJoinRate = completedPassed > 0 ? friendJoinCount / completedPassed : ''
   const groupJoinCounts = groups.map((group) => Number(getGroupStat(groupAccountResult, group.label)?.joinPersonTimes || 0))
   const groupActiveCounts = groups.map((group) => Number(getGroupStat(groupAccountResult, group.label)?.activeSpeakerCount || 0))
 
@@ -524,6 +639,20 @@ function buildRows(config, range, accountResults, groupAccountResult = null) {
             '',
             '',
             '',
+            '',
+            '老用户（非当周）',
+            '',
+            '',
+            '电话回访加好友人数',
+            '',
+            '',
+            '季度回加人数',
+            '',
+            '',
+            '',
+            '',
+            '总计',
+            '',
             ''
           ],
           [
@@ -540,7 +669,21 @@ function buildRows(config, range, accountResults, groupAccountResult = null) {
             '完善用户好友总通过率',
             '⭐️加新用户通过总人数',
             '⭐️技术群进群人数',
-            '技术群进群率'
+            '技术群进群率',
+            '发申请人数',
+            '通过总人数',
+            '通过率',
+            '发申请人数',
+            '通过人数',
+            '通过率',
+            '发申请人数',
+            '通过人数',
+            '通过率',
+            '入群人数',
+            '入群率',
+            '所有好友通过人数',
+            '入群人数',
+            '入群率'
           ]
         ],
         row: [
@@ -557,7 +700,21 @@ function buildRows(config, range, accountResults, groupAccountResult = null) {
           '',
           passedTotal,
           friendJoinCount,
-          passedTotal > 0 ? friendJoinCount / passedTotal : ''
+          friendJoinRate,
+          '',
+          '',
+          '',
+          '',
+          '',
+          '',
+          '',
+          '',
+          '',
+          '',
+          '',
+          completedPassed,
+          friendJoinCount,
+          friendJoinRate
         ]
       },
       {
@@ -565,13 +722,45 @@ function buildRows(config, range, accountResults, groupAccountResult = null) {
         headerRows: [
           [
             '周报日期',
+            '累计人数',
+            ...groupHeaderBlanks,
+            '合计',
+            '内部重复',
+            '外部人员',
             '本周新人进群（不含退群）',
-            ...groupLabels.slice(1).map(() => ''),
-            '合计'
+            ...groupHeaderBlanks,
+            '合计',
+            '移除广告用户',
+            '有效进群用户'
           ],
-          ['', ...groupLabels, '']
+          [
+            '',
+            ...groupLabels,
+            '',
+            '',
+            '',
+            ...groupLabels,
+            '',
+            '',
+            ''
+          ]
         ],
-        row: [weekEnd, ...groupJoinCounts, groupJoinCounts.reduce((sum, value) => sum + value, 0)]
+        row: [
+          weekEnd,
+          '',
+          '',
+          '',
+          '',
+          '',
+          '',
+          '',
+          '',
+          '',
+          ...groupJoinCounts,
+          groupJoinCounts.reduce((sum, value) => sum + value, 0),
+          '',
+          ''
+        ]
       },
       {
         name: '群友互动周报',
@@ -675,7 +864,11 @@ function runSelfTest() {
     completedRemarkKeyword: '已完善',
     groups: [
       { label: '医疗技术群', chatroomId: 'g1@chatroom', countForFriendJoin: true },
-      { label: '医疗沙龙群', chatroomId: 'g2@chatroom', countForFriendJoin: false }
+      { label: '医疗沙龙群', chatroomId: 'g2@chatroom', countForFriendJoin: false },
+      { label: '企业技术群', chatroomId: 'g3@chatroom', countForFriendJoin: true },
+      { label: '企业沙龙群', chatroomId: 'g4@chatroom', countForFriendJoin: false },
+      { label: '教育技术群', chatroomId: 'g5@chatroom', countForFriendJoin: true },
+      { label: '教育沙龙群', chatroomId: 'g6@chatroom', countForFriendJoin: false }
     ]
   }
   const accountResults = [
@@ -720,9 +913,12 @@ function runSelfTest() {
   assertEqual(friendRow[4], 1, '完善用户通过人数按用户去重')
   assertEqual(friendRow[5], 2, '非完善用户通过人数按用户去重')
   assertEqual(friendRow[12], 2, '加好友周报技术群进群人数按新好友去重')
-  assertEqual(groupRow[1], 3, '社群周报只取指定群统计账号')
-  assertEqual(groupRow[2], 1, '社群周报不同群不去重')
+  assertEqual(groupRow[10], 3, '社群周报只取指定群统计账号')
+  assertEqual(groupRow[11], 1, '社群周报不同群不去重')
   assertEqual(activeRow[1], 2, '群友互动只取指定群统计账号')
+  assertEqual(friendRow.length, 28, '加好友周报输出列数')
+  assertEqual(groupRow.length, 19, '社群周报输出列数')
+  assertEqual(activeRow.length, 8, '群友互动周报输出列数')
   console.log('self-test ok')
 }
 

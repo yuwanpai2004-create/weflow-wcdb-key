@@ -819,8 +819,8 @@ class HttpService {
     const format = formatParam || (chatlab ? 'chatlab' : 'json')
     const mediaOptions = this.parseMediaOptions(url)
 
-    if (!talker) {
-      this.sendError(res, 400, 'Missing required parameter: talker')
+    if (!talker && !keyword) {
+      this.sendError(res, 400, 'Missing required parameter: talker or keyword')
       return
     }
 
@@ -872,8 +872,8 @@ class HttpService {
       ? await this.exportMediaForMessages(messages, talker, mediaOptions)
       : new Map<number, ApiExportedMedia>()
 
-    const displayNames = await this.getDisplayNames([talker])
-    const talkerName = displayNames[talker] || talker
+    const displayNames = talker ? await this.getDisplayNames([talker]) : {}
+    const talkerName = talker ? (displayNames[talker] || talker) : 'global'
 
     if (format === 'chatlab') {
       const chatLabData = await this.convertToChatLab(messages, talker, talkerName, mediaMap)
@@ -1636,6 +1636,7 @@ class HttpService {
       content: this.getMessageContent(msg, quoteInfo),
       rawContent: msg.rawContent,
       parsedContent: msg.parsedContent,
+      sessionId: (msg as Message & { sessionId?: string }).sessionId,
       mediaType: media?.kind,
       mediaFileName: media?.fileName,
       mediaUrl: media ? `http://${this.host}:${this.port}/api/v1/media/${media.relativePath}` : undefined,

@@ -16,6 +16,10 @@
     }
   ],
   "completedRemarkKeyword": "已完善",
+  "completedMessageKeywords": [
+    "感谢您关注天天开源软件，现在拉您进专属技术交流群，有问题欢迎随时咨询~"
+  ],
+  "messageScanConcurrency": 5,
   "groups": [
     {
       "label": "医疗技术群",

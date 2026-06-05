@@ -126,7 +126,7 @@ GET /api/v1/messages
 
 | 参数      | 类型   | 必填 | 说明                                                  |
 | --------- | ------ | ---- | ----------------------------------------------------- |
-| `talker`  | string | 是   | 会话 ID。私聊通常是对方 `wxid`，群聊是 `xxx@chatroom` |
+| `talker`  | string | 条件必填 | 会话 ID。私聊通常是对方 `wxid`，群聊是 `xxx@chatroom`。不传 `talker` 但传 `keyword` 时，会进行全局关键词搜索 |
 | `limit`   | number | 否   | 返回条数，默认 `100`，范围 `1~10000`                  |
 | `offset`  | number | 否   | 分页偏移，默认 `0`                                    |
 | `start`   | string | 否   | 开始时间，支持 `YYYYMMDD` 或时间戳                    |
@@ -146,6 +146,7 @@ GET /api/v1/messages
 curl "http://127.0.0.1:5031/api/v1/messages?talker=wxid_xxx&limit=20"
 curl "http://127.0.0.1:5031/api/v1/messages?talker=xxx@chatroom&chatlab=1"
 curl "http://127.0.0.1:5031/api/v1/messages?talker=wxid_xxx&start=20260101&end=20260131"
+curl "http://127.0.0.1:5031/api/v1/messages?keyword=感谢您关注天天开源软件&start=20260101&end=20260131"
 curl "http://127.0.0.1:5031/api/v1/messages?talker=xxx@chatroom&media=1&image=1&voice=0&video=0&emoji=0"
 ```
 
