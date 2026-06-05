@@ -11,6 +11,8 @@ The majority of the WeFlow application source code was originally authored by th
 
 The original repository later became unavailable to the maintainer of this fork. This repository is not affiliated with, endorsed by, sponsored by, or maintained by the original author.
 
+The current maintainer is not a professional developer. This repository exists because the maintainer personally likes WeFlow and wanted to keep using and studying it after the original repository became unavailable. If any attribution, licensing, distribution, or other compliance issue exists, please contact the maintainer; the maintainer will promptly correct, clarify, remove, or take down the relevant material as appropriate.
+
 ## Local Modifications
 
 This fork adds and documents local changes around WeChat WCDB key handling, especially for macOS:
