@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef, type UIEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Search, RefreshCw, X, User, Users, MessageSquare, Loader2, FolderOpen, Download, ChevronDown, MessageCircle, UserX, AlertTriangle, ClipboardList, Aperture } from 'lucide-react'
+import { Search, RefreshCw, X, User, Users, MessageSquare, Loader2, FolderOpen, Download, ChevronDown, MessageCircle, UserX, AlertTriangle, ClipboardList, Aperture, UserPlus } from 'lucide-react'
 import { useChatStore } from '../stores/chatStore'
 import { toContactTypeCardCounts, useContactTypeCountsStore } from '../stores/contactTypeCountsStore'
 import * as configService from '../services/config'
@@ -20,6 +20,7 @@ const VIRTUAL_ROW_HEIGHT = 64
 const VIRTUAL_OVERSCAN = 10
 const DEFAULT_CONTACTS_LOAD_TIMEOUT_MS = 10000
 const AVATAR_RECHECK_INTERVAL_MS = 24 * 60 * 60 * 1000
+const NEW_FRIEND_PREVIEW_LIMIT = 4
 
 interface ContactsLoadSession {
     requestId: string
@@ -39,6 +40,21 @@ interface ContactsLoadIssue {
 }
 
 type ContactsDataSource = 'cache' | 'network' | null
+
+interface NewFriendSnapshotState {
+    baselineAt: number
+    updatedAt: number
+    firstSeenMap: Record<string, configService.ContactsFirstSeenEntry>
+}
+
+function getWeekStartTimestamp(now = new Date()): number {
+    const start = new Date(now)
+    const day = start.getDay()
+    const diff = day === 0 ? -6 : 1 - day
+    start.setDate(start.getDate() + diff)
+    start.setHours(0, 0, 0, 0)
+    return start.getTime()
+}
 
 function ContactsPage() {
     const [contacts, setContacts] = useState<ContactInfo[]>([])
@@ -90,9 +106,22 @@ function ContactsPage() {
     const [contactsDataSource, setContactsDataSource] = useState<ContactsDataSource>(null)
     const [contactsUpdatedAt, setContactsUpdatedAt] = useState<number | null>(null)
     const [avatarCacheUpdatedAt, setAvatarCacheUpdatedAt] = useState<number | null>(null)
+    const [newFriendSnapshot, setNewFriendSnapshot] = useState<NewFriendSnapshotState | null>(null)
     const contactsLoadTimeoutMsRef = useRef(DEFAULT_CONTACTS_LOAD_TIMEOUT_MS)
     const contactsCacheScopeRef = useRef('default')
     const contactsAvatarCacheRef = useRef<Record<string, configService.ContactsAvatarCacheEntry>>({})
+
+    const applyFriendFirstSeenCache = useCallback((cacheItem: configService.ContactsFirstSeenCacheItem | null) => {
+        if (!cacheItem) {
+            setNewFriendSnapshot(null)
+            return
+        }
+        setNewFriendSnapshot({
+            baselineAt: cacheItem.baselineAt || 0,
+            updatedAt: cacheItem.updatedAt || 0,
+            firstSeenMap: cacheItem.friends || {}
+        })
+    }, [])
 
     const ensureContactsCacheScope = useCallback(async () => {
         if (contactsCacheScopeRef.current !== 'default') {
@@ -207,6 +236,72 @@ function ContactsPage() {
         void configService.setContactsAvatarCache(scopeKey, nextCache).catch((error) => {
             console.error('写入通讯录头像缓存失败:', error)
         })
+    }, [])
+
+    const updateFriendFirstSeenSnapshot = useCallback(async (scopeKey: string, sourceContacts: ContactInfo[]) => {
+        if (!scopeKey) return
+        const friendContacts = sourceContacts.filter(contact => contact.type === 'friend' && contact.username)
+        if (friendContacts.length === 0) return
+
+        try {
+            const now = Date.now()
+            const prev = await configService.getContactsFirstSeenCache(scopeKey)
+            const baselineAt = prev?.baselineAt || now
+            const nextMap: Record<string, configService.ContactsFirstSeenEntry> = { ...(prev?.friends || {}) }
+            const isInitialBaseline = !prev || Object.keys(prev.friends || {}).length === 0
+
+            for (const contact of friendContacts) {
+                const username = String(contact.username || '').trim()
+                if (!username) continue
+                const existing = nextMap[username]
+                const displayName = contact.displayName || contact.remark || contact.nickname || username
+                if (!existing) {
+                    nextMap[username] = {
+                        username,
+                        displayName,
+                        remark: contact.remark,
+                        nickname: contact.nickname,
+                        alias: contact.alias,
+                        avatarUrl: contact.avatarUrl,
+                        firstSeenAt: now,
+                        baseline: isInitialBaseline
+                    }
+                    continue
+                }
+
+                if (
+                    existing.displayName !== displayName ||
+                    existing.remark !== contact.remark ||
+                    existing.nickname !== contact.nickname ||
+                    existing.alias !== contact.alias ||
+                    existing.avatarUrl !== contact.avatarUrl
+                ) {
+                    nextMap[username] = {
+                        ...existing,
+                        displayName,
+                        remark: contact.remark,
+                        nickname: contact.nickname,
+                        alias: contact.alias,
+                        avatarUrl: contact.avatarUrl
+                    }
+                }
+            }
+
+            const nextItem: configService.ContactsFirstSeenCacheItem = {
+                updatedAt: now,
+                baselineAt,
+                friends: nextMap
+            }
+            setNewFriendSnapshot({
+                baselineAt,
+                updatedAt: now,
+                firstSeenMap: nextMap
+            })
+
+            await configService.setContactsFirstSeenCache(scopeKey, nextItem)
+        } catch (error) {
+            console.error('更新好友新增追踪失败:', error)
+        }
     }, [])
 
     const applyEnrichedContacts = useCallback((enrichedMap: Record<string, ContactEnrichInfo>) => {
@@ -406,6 +501,7 @@ function ContactsPage() {
                 ).catch((error) => {
                     console.error('写入通讯录缓存失败:', error)
                 })
+                void updateFriendFirstSeenSnapshot(scopeKey, contactsWithAvatarCache)
                 void enrichContactsInBackground(contactsWithAvatarCache, loadVersion, scopeKey)
                 return
             }
@@ -445,6 +541,7 @@ function ContactsPage() {
         enrichContactsInBackground,
         mergeAvatarCacheIntoContacts,
         syncContactTypeCounts,
+        updateFriendFirstSeenSnapshot,
         upsertAvatarCacheFromContacts
     ])
 
@@ -454,10 +551,12 @@ function ContactsPage() {
             const scopeKey = await ensureContactsCacheScope()
             if (cancelled) return
             try {
-                const [cacheItem, avatarCacheItem] = await Promise.all([
+                const [cacheItem, avatarCacheItem, firstSeenCacheItem] = await Promise.all([
                     configService.getContactsListCache(scopeKey),
-                    configService.getContactsAvatarCache(scopeKey)
+                    configService.getContactsAvatarCache(scopeKey),
+                    configService.getContactsFirstSeenCache(scopeKey)
                 ])
+                applyFriendFirstSeenCache(firstSeenCacheItem)
                 const avatarCacheMap = avatarCacheItem?.avatars || {}
                 contactsAvatarCacheRef.current = avatarCacheMap
                 setAvatarCacheUpdatedAt(avatarCacheItem?.updatedAt || null)
@@ -482,7 +581,7 @@ function ContactsPage() {
         return () => {
             cancelled = true
         }
-    }, [ensureContactsCacheScope, loadContacts, syncContactTypeCounts])
+    }, [applyFriendFirstSeenCache, ensureContactsCacheScope, loadContacts, syncContactTypeCounts])
 
     useEffect(() => {
         return () => {
@@ -566,6 +665,39 @@ function ContactsPage() {
     }, [contacts, contactTypes, debouncedSearchKeyword])
 
     const contactTypeCounts = useMemo(() => toContactTypeCardCounts(sharedTabCounts), [sharedTabCounts])
+
+    const weeklyNewFriends = useMemo(() => {
+        if (!newFriendSnapshot?.baselineAt) return []
+        const weekStart = getWeekStartTimestamp()
+        const currentFriendUsernames = new Set(
+            contacts
+                .filter(contact => contact.type === 'friend')
+                .map(contact => contact.username)
+                .filter(Boolean)
+        )
+
+        return Object.values(newFriendSnapshot.firstSeenMap)
+            .filter(entry => (
+                !entry.baseline &&
+                entry.firstSeenAt >= weekStart &&
+                currentFriendUsernames.has(entry.username)
+            ))
+            .sort((a, b) => b.firstSeenAt - a.firstSeenAt)
+    }, [contacts, newFriendSnapshot])
+
+    const weeklyNewFriendPreview = useMemo(() => {
+        return weeklyNewFriends.slice(0, NEW_FRIEND_PREVIEW_LIMIT)
+    }, [weeklyNewFriends])
+
+    const newFriendBaselineLabel = useMemo(() => {
+        if (!newFriendSnapshot?.baselineAt) return ''
+        return new Date(newFriendSnapshot.baselineAt).toLocaleString()
+    }, [newFriendSnapshot])
+
+    const newFriendUpdatedAtLabel = useMemo(() => {
+        if (!newFriendSnapshot?.updatedAt) return ''
+        return new Date(newFriendSnapshot.updatedAt).toLocaleString()
+    }, [newFriendSnapshot])
 
     useEffect(() => {
         if (!listRef.current) return
@@ -926,6 +1058,54 @@ function ContactsPage() {
                         <span className="chip-label">曾经的好友</span>
                         <span className="chip-count">{contactTypeCounts.deletedFriends}</span>
                     </label>
+                </div>
+
+                <div className="new-friends-card">
+                    <div className="new-friends-header">
+                        <div className="new-friends-title">
+                            <UserPlus size={16} />
+                            <span>本周新增好友</span>
+                        </div>
+                        <span className="new-friends-count">{weeklyNewFriends.length}</span>
+                    </div>
+                    {!newFriendSnapshot?.baselineAt ? (
+                        <div className="new-friends-empty">刷新通讯录后开始建立追踪基线</div>
+                    ) : weeklyNewFriends.length > 0 ? (
+                        <>
+                            <div className="new-friends-list">
+                                {weeklyNewFriendPreview.map(friend => (
+                                    <button
+                                        type="button"
+                                        className="new-friend-chip"
+                                        key={friend.username}
+                                        onClick={() => {
+                                            const target = contacts.find(contact => contact.username === friend.username)
+                                            if (target) setSelectedContact(target)
+                                        }}
+                                        title={`${friend.displayName} · ${new Date(friend.firstSeenAt).toLocaleString()}`}
+                                    >
+                                        {friend.avatarUrl ? (
+                                            <img src={friend.avatarUrl} alt="" loading="lazy" />
+                                        ) : (
+                                            <span>{getAvatarLetter(friend.displayName)}</span>
+                                        )}
+                                        <strong>{friend.displayName}</strong>
+                                    </button>
+                                ))}
+                            </div>
+                            {weeklyNewFriends.length > NEW_FRIEND_PREVIEW_LIMIT && (
+                                <div className="new-friends-more">
+                                    还有 {weeklyNewFriends.length - NEW_FRIEND_PREVIEW_LIMIT} 位
+                                </div>
+                            )}
+                        </>
+                    ) : (
+                        <div className="new-friends-empty">本周还没有发现新好友</div>
+                    )}
+                    <div className="new-friends-meta">
+                        {newFriendBaselineLabel ? `基线 ${newFriendBaselineLabel}` : '尚未建立基线'}
+                        {newFriendUpdatedAtLabel ? ` · 更新 ${newFriendUpdatedAtLabel}` : ''}
+                    </div>
                 </div>
 
 

@@ -2666,6 +2666,7 @@ function registerIpcHandlers() {
         'snsPageCacheMap',
         'contactsListCacheMap',
         'contactsAvatarCacheMap',
+        'contactsFirstSeenCacheMap',
         'lastSession'
       ]
       for (const key of resetConfigKeys) {

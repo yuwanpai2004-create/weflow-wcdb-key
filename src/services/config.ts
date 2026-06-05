@@ -54,6 +54,7 @@ export const CONFIG_KEYS = {
   CONTACTS_LOAD_TIMEOUT_MS: 'contactsLoadTimeoutMs',
   CONTACTS_LIST_CACHE_MAP: 'contactsListCacheMap',
   CONTACTS_AVATAR_CACHE_MAP: 'contactsAvatarCacheMap',
+  CONTACTS_FIRST_SEEN_CACHE_MAP: 'contactsFirstSeenCacheMap',
 
   // 安全
   AUTH_ENABLED: 'authEnabled',
@@ -1007,6 +1008,23 @@ export interface ContactsAvatarCacheItem {
   avatars: Record<string, ContactsAvatarCacheEntry>
 }
 
+export interface ContactsFirstSeenEntry {
+  username: string
+  displayName: string
+  remark?: string
+  nickname?: string
+  alias?: string
+  avatarUrl?: string
+  firstSeenAt: number
+  baseline?: boolean
+}
+
+export interface ContactsFirstSeenCacheItem {
+  updatedAt: number
+  baselineAt: number
+  friends: Record<string, ContactsFirstSeenEntry>
+}
+
 export async function getExportSessionMessageCountCache(scopeKey: string): Promise<ExportSessionMessageCountCacheItem | null> {
   if (!scopeKey) return null
   const value = await config.get(CONFIG_KEYS.EXPORT_SESSION_MESSAGE_COUNT_CACHE_MAP)
@@ -1644,6 +1662,80 @@ export async function setContactsAvatarCache(
     avatars: normalized
   }
   await config.set(CONFIG_KEYS.CONTACTS_AVATAR_CACHE_MAP, map)
+}
+
+export async function getContactsFirstSeenCache(scopeKey: string): Promise<ContactsFirstSeenCacheItem | null> {
+  if (!scopeKey) return null
+  const value = await config.get(CONFIG_KEYS.CONTACTS_FIRST_SEEN_CACHE_MAP)
+  if (!value || typeof value !== 'object') return null
+  const rawMap = value as Record<string, unknown>
+  const rawItem = rawMap[scopeKey]
+  if (!rawItem || typeof rawItem !== 'object') return null
+
+  const item = rawItem as Record<string, unknown>
+  const rawUpdatedAt = item.updatedAt
+  const rawBaselineAt = item.baselineAt
+  const rawFriends = item.friends
+  if (!rawFriends || typeof rawFriends !== 'object') return null
+
+  const friends: Record<string, ContactsFirstSeenEntry> = {}
+  for (const [rawUsername, rawEntry] of Object.entries(rawFriends as Record<string, unknown>)) {
+    if (!rawEntry || typeof rawEntry !== 'object') continue
+    const entry = rawEntry as Record<string, unknown>
+    const username = String(entry.username || rawUsername || '').trim()
+    if (!username) continue
+    const firstSeenAt = Number(entry.firstSeenAt)
+    if (!Number.isFinite(firstSeenAt) || firstSeenAt <= 0) continue
+    friends[username] = {
+      username,
+      displayName: String(entry.displayName || username),
+      remark: typeof entry.remark === 'string' ? entry.remark : undefined,
+      nickname: typeof entry.nickname === 'string' ? entry.nickname : undefined,
+      alias: typeof entry.alias === 'string' ? entry.alias : undefined,
+      avatarUrl: typeof entry.avatarUrl === 'string' ? entry.avatarUrl : undefined,
+      firstSeenAt,
+      baseline: Boolean(entry.baseline)
+    }
+  }
+
+  return {
+    updatedAt: typeof rawUpdatedAt === 'number' && Number.isFinite(rawUpdatedAt) ? rawUpdatedAt : 0,
+    baselineAt: typeof rawBaselineAt === 'number' && Number.isFinite(rawBaselineAt) ? rawBaselineAt : 0,
+    friends
+  }
+}
+
+export async function setContactsFirstSeenCache(scopeKey: string, item: ContactsFirstSeenCacheItem): Promise<void> {
+  if (!scopeKey) return
+  const current = await config.get(CONFIG_KEYS.CONTACTS_FIRST_SEEN_CACHE_MAP)
+  const map = current && typeof current === 'object'
+    ? { ...(current as Record<string, unknown>) }
+    : {}
+
+  const friends: Record<string, ContactsFirstSeenEntry> = {}
+  for (const [rawUsername, rawEntry] of Object.entries(item?.friends || {})) {
+    const username = String(rawEntry?.username || rawUsername || '').trim()
+    if (!username) continue
+    const firstSeenAt = Number(rawEntry?.firstSeenAt)
+    if (!Number.isFinite(firstSeenAt) || firstSeenAt <= 0) continue
+    friends[username] = {
+      username,
+      displayName: String(rawEntry?.displayName || username),
+      remark: rawEntry?.remark ? String(rawEntry.remark) : undefined,
+      nickname: rawEntry?.nickname ? String(rawEntry.nickname) : undefined,
+      alias: rawEntry?.alias ? String(rawEntry.alias) : undefined,
+      avatarUrl: rawEntry?.avatarUrl ? String(rawEntry.avatarUrl) : undefined,
+      firstSeenAt,
+      baseline: Boolean(rawEntry?.baseline)
+    }
+  }
+
+  map[scopeKey] = {
+    updatedAt: Date.now(),
+    baselineAt: Number.isFinite(item?.baselineAt) ? Math.max(0, Math.floor(item.baselineAt)) : 0,
+    friends
+  }
+  await config.set(CONFIG_KEYS.CONTACTS_FIRST_SEEN_CACHE_MAP, map)
 }
 
 // === 安全相关 ===
@@ -2301,4 +2393,3 @@ export async function setAutoDownloadWhitelist(list: string[]): Promise<void> {
   const normalized = Array.from(new Set((list || []).map(item => String(item || '').trim()).filter(Boolean)))
   await config.set(CONFIG_KEYS.AUTO_DOWNLOAD_WHITELIST, normalized)
 }
-
