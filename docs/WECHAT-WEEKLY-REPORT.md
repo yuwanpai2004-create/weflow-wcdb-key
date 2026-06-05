@@ -28,22 +28,33 @@ scripts/wechat-weekly-report.config.json
 - `accounts[].apiBaseUrl`：每个账号对应的 WeFlow API 地址。
 - `accounts[].accessToken`：如果 API 服务开启了 Token，就填这里。
 - `accounts[].firstSeenCacheScope`：多个账号时建议填写，用于区分各账号的好友首次出现缓存。
+- `groupStatsAccountName`：只用哪个账号统计社群进群和群友互动，通常填负责维护社群的那个微信账号名。
 - `groups[].chatroomId`：各个群对应的 `xxx@chatroom`。
 
 群 ID 可以在 WeFlow 通讯录里搜索群名，或用本地 API 查询联系人列表后找到对应 `username`。
 
 ## 生成周报
 
-默认统计上周一到上周日，适合周一填写上周周报：
+一台电脑同一时间只能登录一个微信时，按下面流程操作。
+
+先登录第一个微信账号，确保 WeFlow 已连接并开启 API，然后采集该账号：
 
 ```bash
-npm run weekly:wechat
+npm run weekly:wechat -- --account 账号1
 ```
+
+再退出微信，登录第二个微信账号，确保 WeFlow 重新连接到这个账号，然后采集第二个账号：
+
+```bash
+npm run weekly:wechat -- --account 账号2
+```
+
+脚本会把两个账号的好友统计缓存到本地，并自动合并成一份总表输出。只要配置了 `groupStatsAccountName`，社群周报和群友互动周报只会使用指定账号的数据，不会重复统计。
 
 指定某个周日作为周报日期：
 
 ```bash
-npm run weekly:wechat -- --week-end 2026-06-07
+npm run weekly:wechat -- --account 账号1 --week-end 2026-06-07
 ```
 
 输出文件在：
@@ -52,7 +63,7 @@ npm run weekly:wechat -- --week-end 2026-06-07
 outputs/wechat-weekly-report-YYYY-MM-DD.tsv
 ```
 
-可以直接复制对应 sheet 下面的那一行，粘贴到总表。
+每个 sheet 会输出与总表一致的表头和一行数据。实际填写时，可以只复制数据行粘贴到总表对应 sheet；需要核对列时，也可以连同表头一起复制到临时表里查看。
 
 ## 统计口径
 
@@ -64,12 +75,14 @@ outputs/wechat-weekly-report-YYYY-MM-DD.tsv
 - 完善用户：好友备注、昵称、显示名或微信号中包含 `已完善`。
 - 非完善用户：本周新增好友中不包含 `已完善` 的人。
 - 技术群进群人数：本周新增好友里，有多少人进入配置中 `countForFriendJoin=true` 的群，按人去重。
+- 两个账号的好友统计会自动合并到同一行，不会生成两张表。
 
 ### 社群周报
 
 - 统计每个群本周有多少人进群。
 - 这里按群统计人次：同一个人进了多个群，会在多个群各计一次。
 - 一条邀请消息里有多个人，会按多个人计数。
+- 只统计配置项 `groupStatsAccountName` 指定账号中的群聊数据。
 
 ### 群友互动周报
 
@@ -80,3 +93,7 @@ outputs/wechat-weekly-report-YYYY-MM-DD.tsv
 ## 注意
 
 首次使用时，如果还没有建立好友首次出现基线，脚本不会把当前所有好友误算成“本周新增好友”。请先在通讯录页刷新一次，之后新增好友才会被准确统计。
+
+如果周一才第一次建立基线，脚本无法倒推出上周新增好友的真实添加时间；这时会给出警告，并把加好友新增人数统计为 0。后续只要保持每周前刷新过通讯录，周报就可以正常统计。
+
+微信数据库密钥通常按微信账号区分保存，不应假设两个账号使用同一个密钥。这个脚本通过 WeFlow 当前连接账号的 HTTP API 采集数据，不会读取或打印密钥。

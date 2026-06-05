@@ -8,13 +8,17 @@ const ROOT = path.resolve(__dirname, '..')
 const DEFAULT_CONFIG_PATH = path.join(__dirname, 'wechat-weekly-report.config.json')
 const EXAMPLE_CONFIG_PATH = path.join(__dirname, 'wechat-weekly-report.config.example.json')
 const DEFAULT_OUTPUT_DIR = path.join(ROOT, 'outputs')
+const DEFAULT_CACHE_PATH = path.join(DEFAULT_OUTPUT_DIR, 'wechat-weekly-report-cache.json')
 const MESSAGE_PAGE_LIMIT = 10000
 
 function parseArgs(argv) {
   const args = {
     config: DEFAULT_CONFIG_PATH,
     outDir: DEFAULT_OUTPUT_DIR,
+    cache: DEFAULT_CACHE_PATH,
+    account: '',
     initConfig: false,
+    selfTest: false,
     weekEnd: '',
     help: false
   }
@@ -22,10 +26,15 @@ function parseArgs(argv) {
     const item = argv[i]
     if (item === '--help' || item === '-h') args.help = true
     else if (item === '--init-config') args.initConfig = true
+    else if (item === '--self-test') args.selfTest = true
     else if (item === '--config') args.config = argv[++i] || args.config
     else if (item.startsWith('--config=')) args.config = item.slice('--config='.length)
     else if (item === '--out-dir') args.outDir = argv[++i] || args.outDir
     else if (item.startsWith('--out-dir=')) args.outDir = item.slice('--out-dir='.length)
+    else if (item === '--cache') args.cache = argv[++i] || args.cache
+    else if (item.startsWith('--cache=')) args.cache = item.slice('--cache='.length)
+    else if (item === '--account') args.account = argv[++i] || ''
+    else if (item.startsWith('--account=')) args.account = item.slice('--account='.length)
     else if (item === '--week-end') args.weekEnd = argv[++i] || ''
     else if (item.startsWith('--week-end=')) args.weekEnd = item.slice('--week-end='.length)
     else throw new Error(`未知参数: ${item}`)
@@ -38,14 +47,17 @@ function printHelp() {
 
 用法:
   node scripts/wechat-weekly-report.cjs --init-config
-  node scripts/wechat-weekly-report.cjs
+  node scripts/wechat-weekly-report.cjs --account 账号1
+  node scripts/wechat-weekly-report.cjs --account 账号2
   node scripts/wechat-weekly-report.cjs --week-end 2026-06-07
+  node scripts/wechat-weekly-report.cjs --self-test
 
 说明:
   - 默认统计“上周一 00:00:00 到上周日 23:59:59”，适合周一填写上周周报。
   - --week-end 可指定周报日期，也就是表格 A 列的周日日期。
   - 需要先启动 WeFlow、连接对应账号，并在设置中启用 HTTP API 服务。
-  - 两个账号可配置为两个不同 API 端口；脚本会自动合并统计。
+  - 一台电脑一次只能登录一个微信时，切换账号后分别用 --account 采集；脚本会缓存并自动合并成一份表。
+  - 配置 groupStatsAccountName 后，社群周报和群友互动只统计该账号。
 `)
 }
 
@@ -107,6 +119,26 @@ function toYmdCompact(date) {
 
 function normalizeBaseUrl(value) {
   return String(value || '').trim().replace(/\/+$/, '')
+}
+
+function getAccountKey(account) {
+  return String(account.id || account.name || account.apiBaseUrl || '').trim()
+}
+
+function findAccount(accounts, selector) {
+  const key = String(selector || '').trim()
+  if (!key) return null
+  return accounts.find((account) => (
+    getAccountKey(account) === key ||
+    String(account.name || '').trim() === key ||
+    String(account.id || '').trim() === key
+  )) || null
+}
+
+function shouldCollectGroupsForAccount(config, account) {
+  const target = String(config.groupStatsAccountName || config.groupStatsAccount || '').trim()
+  if (!target) return true
+  return getAccountKey(account) === target || String(account.name || '').trim() === target
 }
 
 async function apiGet(account, pathname, params = {}) {
@@ -302,13 +334,22 @@ function getWeeklyNewFriendContacts(account, contacts, config, range, firstSeenC
   return { contacts: weeklyContacts, scope }
 }
 
-async function collectAccount(account, config, range) {
+function compactFriend(contact) {
+  return {
+    username: String(contact.username || '').trim(),
+    displayName: contactDisplayName(contact),
+    remark: contact.remark || '',
+    nickname: contact.nickname || '',
+    alias: contact.alias || ''
+  }
+}
+
+async function collectAccount(account, config, range, options = {}) {
   const contacts = await fetchContacts(account)
   const firstSeenCache = config.__firstSeenCache || { map: {} }
   const weeklyNew = getWeeklyNewFriendContacts(account, contacts, config, range, firstSeenCache)
   if (weeklyNew.warning) console.warn(`警告: ${weeklyNew.warning}`)
   const weeklyNewFriends = weeklyNew.contacts
-  const indexes = buildContactIndexes(weeklyNewFriends)
   const completed = new Set()
   const incomplete = new Set()
   for (const friend of weeklyNewFriends) {
@@ -319,14 +360,15 @@ async function collectAccount(account, config, range) {
   }
 
   const groupStats = new Map()
-  const joinedFriendUsernames = new Set()
+  const includeGroups = options.includeGroups !== false
 
   for (const group of config.groups || []) {
     const chatroomId = String(group.chatroomId || '').trim()
-    if (!chatroomId) {
+    if (!includeGroups || !chatroomId) {
       groupStats.set(group.label, {
         joinPersonTimes: 0,
         activeSpeakerCount: 0,
+        joinMembers: [],
         skipped: true
       })
       continue
@@ -334,6 +376,7 @@ async function collectAccount(account, config, range) {
 
     const messages = await fetchMessages(account, chatroomId, range.start, range.end)
     const activeSpeakers = new Set()
+    const joinMembersAll = []
     let joinPersonTimes = 0
 
     for (const message of messages) {
@@ -344,31 +387,66 @@ async function collectAccount(account, config, range) {
       const joinMembers = extractJoinMembers(message)
       if (joinMembers.length > 0) {
         joinPersonTimes += joinMembers.length
-        if (group.countForFriendJoin !== false) {
-          for (const member of joinMembers) {
-            const contact = member.username
-              ? indexes.byUsername.get(member.username)
-              : indexes.byName.get(member.displayName)
-            if (contact?.username) joinedFriendUsernames.add(contact.username)
-          }
-        }
+        joinMembersAll.push(...joinMembers)
       }
     }
 
     groupStats.set(group.label, {
       joinPersonTimes,
       activeSpeakerCount: activeSpeakers.size,
+      joinMembers: joinMembersAll,
       skipped: false
     })
   }
 
   return {
-    account: account.name || account.apiBaseUrl,
+    account: getAccountKey(account),
+    accountName: account.name || account.apiBaseUrl,
     contacts,
-    weeklyNewFriendUsernames: new Set(weeklyNewFriends.map((item) => item.username).filter(Boolean)),
+    weeklyNewFriends: weeklyNewFriends.map(compactFriend).filter((item) => item.username),
     completed,
     incomplete,
-    joinedFriendUsernames,
+    groupStats
+  }
+}
+
+function serializeAccountResult(result) {
+  const groupStats = {}
+  for (const [label, stat] of result.groupStats || new Map()) {
+    groupStats[label] = {
+      joinPersonTimes: Number(stat.joinPersonTimes || 0),
+      activeSpeakerCount: Number(stat.activeSpeakerCount || 0),
+      joinMembers: Array.isArray(stat.joinMembers) ? stat.joinMembers : [],
+      skipped: Boolean(stat.skipped)
+    }
+  }
+  return {
+    account: result.account,
+    accountName: result.accountName || result.account,
+    collectedAt: Date.now(),
+    weeklyNewFriends: result.weeklyNewFriends || [],
+    completed: Array.from(result.completed || []),
+    incomplete: Array.from(result.incomplete || []),
+    groupStats
+  }
+}
+
+function deserializeAccountResult(raw) {
+  const groupStats = new Map()
+  for (const [label, stat] of Object.entries(raw?.groupStats || {})) {
+    groupStats.set(label, {
+      joinPersonTimes: Number(stat?.joinPersonTimes || 0),
+      activeSpeakerCount: Number(stat?.activeSpeakerCount || 0),
+      joinMembers: Array.isArray(stat?.joinMembers) ? stat.joinMembers : [],
+      skipped: Boolean(stat?.skipped)
+    })
+  }
+  return {
+    account: raw?.account || '',
+    accountName: raw?.accountName || raw?.account || '',
+    weeklyNewFriends: Array.isArray(raw?.weeklyNewFriends) ? raw.weeklyNewFriends : [],
+    completed: new Set(Array.isArray(raw?.completed) ? raw.completed : []),
+    incomplete: new Set(Array.isArray(raw?.incomplete) ? raw.incomplete : []),
     groupStats
   }
 }
@@ -383,18 +461,38 @@ function sumGroups(groups, accountResults, field) {
   })
 }
 
-function buildRows(config, range, accountResults) {
+function getGroupStat(result, label) {
+  if (!result) return null
+  if (result.groupStats instanceof Map) return result.groupStats.get(label) || null
+  return result.groupStats?.[label] || null
+}
+
+function buildRows(config, range, accountResults, groupAccountResult = null) {
   const weekEnd = formatDate(range.end)
   const groups = config.groups || []
   const groupLabels = groups.map((group) => group.label)
   const allCompleted = new Set()
   const allIncomplete = new Set()
+  const allWeeklyNewFriends = []
   const allJoinedFriends = new Set()
 
   for (const result of accountResults) {
     for (const username of result.completed) allCompleted.add(username)
     for (const username of result.incomplete) allIncomplete.add(username)
-    for (const username of result.joinedFriendUsernames) allJoinedFriends.add(username)
+    allWeeklyNewFriends.push(...(result.weeklyNewFriends || []))
+  }
+
+  const weeklyNewIndexes = buildContactIndexes(allWeeklyNewFriends)
+  for (const group of groups) {
+    if (group.countForFriendJoin === false) continue
+    const stat = getGroupStat(groupAccountResult, group.label)
+    const joinMembers = Array.isArray(stat?.joinMembers) ? stat.joinMembers : []
+    for (const member of joinMembers) {
+      const contact = member.username
+        ? weeklyNewIndexes.byUsername.get(member.username)
+        : weeklyNewIndexes.byName.get(member.displayName)
+      if (contact?.username) allJoinedFriends.add(contact.username)
+    }
   }
 
   const completedApply = ''
@@ -403,29 +501,47 @@ function buildRows(config, range, accountResults) {
   const incompletePassed = allIncomplete.size
   const passedTotal = completedPassed + incompletePassed
   const friendJoinCount = allJoinedFriends.size
-  const groupJoinCounts = sumGroups(groups, accountResults, 'joinPersonTimes')
-  const groupActiveCounts = sumGroups(groups, accountResults, 'activeSpeakerCount')
+  const groupJoinCounts = groups.map((group) => Number(getGroupStat(groupAccountResult, group.label)?.joinPersonTimes || 0))
+  const groupActiveCounts = groups.map((group) => Number(getGroupStat(groupAccountResult, group.label)?.activeSpeakerCount || 0))
 
   return {
     weekEnd,
     sheets: [
       {
         name: '加好友周报',
-        header: [
-          '周报日期',
-          '官网版本',
-          '微信发申请完善用户人数',
-          '微信发申请非完善用户数',
-          '微信通过完善用户人数',
-          '微信通过非完善用户人数',
-          '微信通过率',
-          '企微被完善用户添加人数',
-          '企微被非完善用户添加人数',
-          '⭐️完善用户总通过人数',
-          '完善用户好友总通过率',
-          '⭐️加新用户通过总人数',
-          '⭐️技术群进群人数',
-          '技术群进群率'
+        headerRows: [
+          [
+            '周报日期',
+            '官网版本',
+            '新用户（当周）',
+            '',
+            '',
+            '',
+            '',
+            '',
+            '',
+            '',
+            '',
+            '',
+            '',
+            ''
+          ],
+          [
+            '',
+            '',
+            '微信发申请完善用户人数',
+            '微信发申请非完善用户数',
+            '微信通过完善用户人数',
+            '微信通过非完善用户人数',
+            '微信通过率',
+            '企微被完善用户添加人数',
+            '企微被非完善用户添加人数',
+            '⭐️完善用户总通过人数',
+            '完善用户好友总通过率',
+            '⭐️加新用户通过总人数',
+            '⭐️技术群进群人数',
+            '技术群进群率'
+          ]
         ],
         row: [
           weekEnd,
@@ -446,12 +562,20 @@ function buildRows(config, range, accountResults) {
       },
       {
         name: '社群周报',
-        header: ['周报日期', ...groupLabels, '合计'],
+        headerRows: [
+          [
+            '周报日期',
+            '本周新人进群（不含退群）',
+            ...groupLabels.slice(1).map(() => ''),
+            '合计'
+          ],
+          ['', ...groupLabels, '']
+        ],
         row: [weekEnd, ...groupJoinCounts, groupJoinCounts.reduce((sum, value) => sum + value, 0)]
       },
       {
         name: '群友互动周报',
-        header: ['周报日期', ...groupLabels, '总计'],
+        headerRows: [['周报日期', ...groupLabels, '总计']],
         row: [weekEnd, ...groupActiveCounts, groupActiveCounts.reduce((sum, value) => sum + value, 0)]
       }
     ]
@@ -473,17 +597,143 @@ function renderTsv(report) {
   lines.push('')
   for (const sheet of report.sheets) {
     lines.push(`[${sheet.name}]`)
-    lines.push(sheet.header.map(toTsvValue).join('\t'))
+    const headerRows = Array.isArray(sheet.headerRows) ? sheet.headerRows : [sheet.header || []]
+    for (const header of headerRows) {
+      lines.push(header.map(toTsvValue).join('\t'))
+    }
     lines.push(sheet.row.map(toTsvValue).join('\t'))
     lines.push('')
   }
   return lines.join('\n')
 }
 
+function loadReportCache(cachePath) {
+  const resolved = expandHome(cachePath)
+  if (!fs.existsSync(resolved)) return { path: resolved, weeks: {} }
+  try {
+    const raw = readJson(resolved)
+    return {
+      path: resolved,
+      weeks: raw.weeks && typeof raw.weeks === 'object' ? raw.weeks : {}
+    }
+  } catch (error) {
+    console.warn(`警告: 读取周报缓存失败，将重新创建: ${String(error)}`)
+    return { path: resolved, weeks: {} }
+  }
+}
+
+function saveReportCache(cache) {
+  fs.mkdirSync(path.dirname(cache.path), { recursive: true })
+  fs.writeFileSync(cache.path, `${JSON.stringify({ weeks: cache.weeks }, null, 2)}\n`, 'utf8')
+}
+
+function getWeekCache(cache, weekEnd) {
+  if (!cache.weeks[weekEnd]) {
+    cache.weeks[weekEnd] = {
+      updatedAt: Date.now(),
+      accounts: {}
+    }
+  }
+  if (!cache.weeks[weekEnd].accounts || typeof cache.weeks[weekEnd].accounts !== 'object') {
+    cache.weeks[weekEnd].accounts = {}
+  }
+  return cache.weeks[weekEnd]
+}
+
+function buildAccountResultsFromCache(accounts, weekCache) {
+  const results = []
+  const missing = []
+  for (const account of accounts) {
+    const key = getAccountKey(account)
+    const raw = weekCache.accounts[key]
+    if (!raw) {
+      missing.push(key)
+      continue
+    }
+    results.push(deserializeAccountResult(raw))
+  }
+  return { results, missing }
+}
+
+function resolveGroupAccountResult(config, accounts, accountResults) {
+  const target = String(config.groupStatsAccountName || config.groupStatsAccount || '').trim()
+  if (!target) return accountResults.find((result) => result.groupStats && result.groupStats.size > 0) || null
+  const account = findAccount(accounts, target)
+  const key = account ? getAccountKey(account) : target
+  return accountResults.find((result) => result.account === key || result.accountName === target) || null
+}
+
+function assertEqual(actual, expected, label) {
+  if (actual !== expected) {
+    throw new Error(`${label}: expected ${expected}, got ${actual}`)
+  }
+}
+
+function runSelfTest() {
+  const range = getWeekRangeFromEnd('2026-06-07')
+  const config = {
+    completedRemarkKeyword: '已完善',
+    groups: [
+      { label: '医疗技术群', chatroomId: 'g1@chatroom', countForFriendJoin: true },
+      { label: '医疗沙龙群', chatroomId: 'g2@chatroom', countForFriendJoin: false }
+    ]
+  }
+  const accountResults = [
+    {
+      account: 'a1',
+      completed: new Set(['wxid_a']),
+      incomplete: new Set(['wxid_b']),
+      weeklyNewFriends: [
+        { username: 'wxid_a', displayName: 'A' },
+        { username: 'wxid_b', displayName: 'B' }
+      ],
+      groupStats: new Map([
+        ['医疗技术群', {
+          joinPersonTimes: 3,
+          activeSpeakerCount: 2,
+          joinMembers: [{ username: 'wxid_a' }, { username: 'wxid_b' }, { username: 'wxid_x' }]
+        }],
+        ['医疗沙龙群', {
+          joinPersonTimes: 1,
+          activeSpeakerCount: 1,
+          joinMembers: [{ username: 'wxid_b' }]
+        }]
+      ])
+    },
+    {
+      account: 'a2',
+      completed: new Set(['wxid_a']),
+      incomplete: new Set(['wxid_c']),
+      weeklyNewFriends: [
+        { username: 'wxid_c', displayName: 'C' }
+      ],
+      groupStats: new Map([
+        ['医疗技术群', { joinPersonTimes: 99, activeSpeakerCount: 99, joinMembers: [] }],
+        ['医疗沙龙群', { joinPersonTimes: 99, activeSpeakerCount: 99, joinMembers: [] }]
+      ])
+    }
+  ]
+  const result = buildRows(config, range, accountResults, accountResults[0])
+  const friendRow = result.sheets.find((sheet) => sheet.name === '加好友周报').row
+  const groupRow = result.sheets.find((sheet) => sheet.name === '社群周报').row
+  const activeRow = result.sheets.find((sheet) => sheet.name === '群友互动周报').row
+  assertEqual(friendRow[4], 1, '完善用户通过人数按用户去重')
+  assertEqual(friendRow[5], 2, '非完善用户通过人数按用户去重')
+  assertEqual(friendRow[12], 2, '加好友周报技术群进群人数按新好友去重')
+  assertEqual(groupRow[1], 3, '社群周报只取指定群统计账号')
+  assertEqual(groupRow[2], 1, '社群周报不同群不去重')
+  assertEqual(activeRow[1], 2, '群友互动只取指定群统计账号')
+  console.log('self-test ok')
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2))
   if (args.help) {
     printHelp()
+    return
+  }
+  if (args.selfTest) {
+    runSelfTest()
     return
   }
   if (args.initConfig) {
@@ -509,18 +759,45 @@ async function main() {
   const accounts = (config.accounts || []).filter((account) => normalizeBaseUrl(account.apiBaseUrl))
   if (accounts.length === 0) throw new Error('配置中至少需要一个 accounts[].apiBaseUrl')
 
-  const accountResults = []
-  for (const account of accounts) {
-    console.log(`统计账号: ${account.name || account.apiBaseUrl}`)
-    accountResults.push(await collectAccount(account, config, range))
+  const weekEnd = formatDate(range.end)
+  const cache = loadReportCache(args.cache)
+  const weekCache = getWeekCache(cache, weekEnd)
+  const accountsToCollect = []
+  if (args.account) {
+    const activeAccount = findAccount(accounts, args.account)
+    if (!activeAccount) throw new Error(`配置中找不到账号: ${args.account}`)
+    accountsToCollect.push(activeAccount)
+  } else if (accounts.length === 1) {
+    accountsToCollect.push(accounts[0])
+  } else {
+    console.warn('提示: 配置了多个账号但未传 --account，本次只用已有缓存生成汇总；如需采集当前登录账号，请传 --account 账号名。')
   }
 
-  const report = buildRows(config, range, accountResults)
+  for (const account of accountsToCollect) {
+    const includeGroups = shouldCollectGroupsForAccount(config, account)
+    console.log(`采集账号: ${account.name || account.apiBaseUrl}${includeGroups ? '（含群聊统计）' : '（仅好友统计）'}`)
+    const fresh = await collectAccount(account, config, range, { includeGroups })
+    weekCache.accounts[getAccountKey(account)] = serializeAccountResult(fresh)
+    weekCache.updatedAt = Date.now()
+    saveReportCache(cache)
+  }
+
+  const { results: accountResults, missing } = buildAccountResultsFromCache(accounts, weekCache)
+  for (const key of missing) {
+    console.warn(`警告: ${weekEnd} 缺少账号 ${key} 的好友统计缓存，请登录该微信后运行 --account ${key}`)
+  }
+  const groupAccountResult = resolveGroupAccountResult(config, accounts, accountResults)
+  if (!groupAccountResult) {
+    console.warn('警告: 缺少群聊统计账号缓存，社群周报和群友互动周报会输出 0。')
+  }
+
+  const report = buildRows(config, range, accountResults, groupAccountResult)
   fs.mkdirSync(args.outDir, { recursive: true })
   const outPath = path.join(args.outDir, `wechat-weekly-report-${report.weekEnd}.tsv`)
   fs.writeFileSync(outPath, renderTsv(report), 'utf8')
 
   console.log(`统计周期: ${formatDate(range.start)} 至 ${formatDate(range.end)}`)
+  console.log(`缓存文件: ${cache.path}`)
   console.log(`已生成: ${outPath}`)
   console.log('')
   console.log(renderTsv(report))

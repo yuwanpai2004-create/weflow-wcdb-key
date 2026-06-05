@@ -1,5 +1,6 @@
 {
   "weflowConfigPath": "~/Library/Application Support/weflow/WeFlow-config.json",
+  "groupStatsAccountName": "账号1",
   "accounts": [
     {
       "name": "账号1",

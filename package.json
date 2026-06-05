@@ -22,7 +22,8 @@
     "electron:dev": "node scripts/prepare-electron-runtime.cjs && vite --mode electron",
     "electron:build": "npm run build",
     "weekly:wechat": "node scripts/wechat-weekly-report.cjs",
-    "weekly:wechat:init": "node scripts/wechat-weekly-report.cjs --init-config"
+    "weekly:wechat:init": "node scripts/wechat-weekly-report.cjs --init-config",
+    "weekly:wechat:test": "node scripts/wechat-weekly-report.cjs --self-test"
   },
   "dependencies": {
     "@vscode/sudo-prompt": "^9.3.2",
