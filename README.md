@@ -1,231 +1,301 @@
-# WeFlow
+# WeFlow WCDB Key Edition
 
-WeFlow 是一个**完全本地**的微信**实时**聊天记录查看、分析与导出工具。它可以实时获取你的微信聊天记录并将其导出，还可以根据你的聊天记录为你生成独一无二的分析报告。
+这是一个基于 WeFlow 的本地微信聊天记录查看、分析、导出工具，并额外整理了 macOS 微信数据库密钥获取方案。
 
----
+> 说明：原项目来自 GitHub 用户 [hicccc77](https://github.com/hicccc77) 的 WeFlow。后来原仓库不知为何删除或不可访问；同时原项目内置的 macOS 获取密钥方法在当前微信版本上已经失效。因此我在原项目基础上继续整理，并借助 Codex 完成了 macOS 密钥获取、导入流程和文档层面的优化。
 
-**WeFlow** is a fully local tool for viewing, analyzing, and exporting WeChat chat history in real time. It generates unique analysis reports based on your chat history.
+![WeFlow preview](app.jpg)
 
-<p align="center">
-  <img src="app.jpg" alt="WeFlow 应用预览" width="90%">
-</p>
+## 项目做了什么
 
-<p align="center">
-  <a href="https://github.com/hicccc77/WeFlow/stargazers"><img src="https://img.shields.io/github/stars/hicccc77/WeFlow?style=flat&label=Stars&labelColor=1F2937&color=2563EB" alt="Stargazers"></a>
-  <a href="https://github.com/hicccc77/WeFlow/network/members"><img src="https://img.shields.io/github/forks/hicccc77/WeFlow?style=flat&label=Forks&labelColor=1F2937&color=7C3AED" alt="Forks"></a>
-  <a href="https://github.com/hicccc77/WeFlow/issues"><img src="https://img.shields.io/github/issues/hicccc77/WeFlow?style=flat&label=Issues&labelColor=1F2937&color=D97706" alt="Issues"></a>
-  <a href="https://github.com/hicccc77/WeFlow/releases"><img src="https://img.shields.io/github/downloads/hicccc77/WeFlow/total?style=flat&label=Downloads&labelColor=1F2937&color=059669" alt="Downloads"></a>
-  <br><br>
-  <a href="https://t.me/weflow_cc"><img src="https://img.shields.io/badge/Telegram-频道-1D9BF0?style=flat&logo=telegram&logoColor=white&labelColor=1F2937&color=1D9BF0" alt="Telegram Channel" style="height: 22px; vertical-align: middle;"></a>
-  <a href="https://www.star-history.com/hicccc77/weflow"><img src="https://api.star-history.com/badge?repo=hicccc77/WeFlow&theme=dark" alt="Star History Rank" style="height: 32px; vertical-align: middle;"></a>
-</p>
+这个仓库包含两部分：
 
-> [!TIP]
-> 如果导出聊天记录后，想深入分析聊天内容可以试试 [ChatLab](https://chatlab.fun/)
-> 
-> If you want to analyze your exported chat content in depth, try [ChatLab](https://chatlab.fun/)
+- WeFlow 桌面端源码：用于本地读取、查看、分析和导出微信聊天记录。
+- macOS 密钥获取工具：位于 `tools/wcdb-key-tool-macos/`，用于捕获微信数据库 passphrase，并派生每个数据库的 64 位解密 key。
 
-> [!NOTE]
-> 仅支持微信 **4.0 及以上**版本，确保你的微信版本符合要求
-> 
-> Only supports WeChat **version 4.0 and above**. Please ensure your WeChat version meets the requirements.
+相比原版，这个整理版重点补充了：
 
-## 主要功能
+- macOS 下基于 LLDB 捕获 passphrase 的流程。
+- 将 passphrase 派生为各个数据库的 `enc_key` / `raw_key`。
+- `all_keys.json` 同时写入 `passphrase` 和每个数据库的 64 位 key。
+- WeFlow 导入密钥时优先读取 `passphrase`，避免误把单库 `enc_key` 当作 WeFlow 解密口令导致错误码 `-3`。
+- 自动选择最近活跃的微信账号目录，减少切换账号后仍导入旧账号密钥的问题。
+- 发布前排除了真实密钥、抓取日志、解密后的数据库和本机配置。
 
-- 本地实时查看聊天记录
-- 朋友圈图片、视频、**实况**的预览和解密
-- 统计分析与群聊画像
-- 年度报告与可视化概览
-- 导出聊天记录为 HTML 等格式
-- HTTP API 接口（供开发者集成）
-- 查看完整能力清单：[详细功能](#详细功能清单)
+## 开发历程
 
----
+最开始我只是想继续使用 WeFlow，但原作者 [hicccc77](https://github.com/hicccc77) 的仓库已经不可访问。手头保留了一份本地源码后，我发现原项目里 macOS 自动获取密钥的方式已经无法适配当前微信版本。
 
-**Key Features**
+排查过程中遇到两个主要问题：
 
-- View chat history locally in real-time
-- Preview and decrypt Moments photos, videos, and **Live Photos**
-- Statistical analysis and group chat insights
-- Annual reports and visual overviews
-- Export chat history to HTML and other formats
-- HTTP API (for developer integration)
-- View complete feature list: [Detailed Features](#详细功能清单)
+1. WeFlow 在导入密钥时，如果误用了 `all_keys.json` 里的单个数据库 `enc_key`，数据库会打开失败并报错 `-3`。
+2. 新微信账号首次抓取时，如果继续复用旧账号的 passphrase 或旧的 `all_keys.json`，派生出的 key 无法通过任何数据库 salt 校验。
 
-## 支持平台与设备
+后来参考 Linux 上获取 WCDB 密钥的思路，也就是在微信登录时捕获 32 字节 passphrase，再通过数据库 salt 进行 PBKDF2-SHA512 派生。我让 Codex 在这个方向上做了 macOS 适配：
 
-| 平台 | 设备/架构 | 安装包 |
-|------|----------|--------|
-| Windows | Windows10+、x64（amd64） | `.exe` |
-| macOS | Apple Silicon（M 系列，arm64） | `.dmg` |
-| Linux | x64 设备（amd64） | `.AppImage`、`.tar.gz` |
+- Linux 方案通常通过 ELF 静态分析 + GDB 断点定位密钥相关函数。
+- macOS 不能直接复用 Linux 的 `/proc`、ELF 和 GDB 流程，所以改成 LLDB 附加微信进程。
+- 在 macOS 上断到 `CCKeyDerivationPBKDF`，过滤 `passwordLen=32`、`saltLen=16`、`rounds=256000` 的 PBKDF2 调用。
+- 使用当前数据库的 salt 做过滤，确认捕获到的是正在用于 WCDB 的 passphrase。
+- 再用 SQLCipher4/WCDB 参数派生每个数据库实际使用的 64 位 `enc_key` / `raw_key`。
 
----
+经过验证，WeFlow 实际需要导入的是 passphrase，而不是某个数据库派生后的 `enc_key`。这也是本仓库修复导入逻辑的核心原因。
 
-**Supported Platforms & Devices**
+## 技术实现
 
-| Platform | Device/Architecture | Package |
-|----------|---------------------|---------|
-| Windows | Windows 10+, x64 (amd64) | `.exe` |
-| macOS | Apple Silicon (M series, arm64) | `.dmg` |
-| Linux | x64 devices (amd64) | `.AppImage`, `.tar.gz` |
+### WeFlow 侧
 
-## 快速开始
+WeFlow 是 Electron + React + Vite 应用。主进程负责读取本地微信数据库，前端负责展示聊天、联系人、分析报告和导出功能。
 
-若你只想使用成品版本，可前往 [Releases](https://github.com/hicccc77/WeFlow/releases) 下载并安装。
+数据库连接流程大致是：
 
-> ArchLinux 用户可以选择 `yay -S weflow` 快速安装
+1. 选择微信数据根目录，例如 macOS 的 `xwechat_files`。
+2. 选择具体账号目录，例如 `wxid_xxx_xxxx`。
+3. 提供 64 位 passphrase。
+4. WeFlow 调用 native WCDB 库打开账号数据库。
 
----
+本仓库对密钥导入做了调整：
 
-**Quick Start**
+- 支持导入包含 `passphrase` 的 `all_keys.json`。
+- 支持导入 `wechat-passphrase.json`。
+- 支持导入纯 64 位十六进制文本。
+- 如果选择的是只有单库 `enc_key` 的旧格式文件，会提示原因，避免继续触发 `-3`。
 
-If you just want to use the pre-compiled application, go to [Releases](https://github.com/hicccc77/WeFlow/releases) to download and install.
+### macOS 密钥工具侧
 
-> ArchLinux users can quickly install with `yay -S weflow`
+工具位置：
 
-## 详细功能清单
-
-当前版本已支持以下能力：
-
-| 功能模块 | 说明 |
-|---------|------|
-| **聊天** | 解密聊天中的图片、视频、实况（仅支持谷歌协议拍摄的实况）；支持**修改**、删除**本地**消息；实时刷新最新消息，无需生成解密中间数据库 |
-| **消息防撤回** | 防止其他人发送的消息被撤回 |
-| **实时弹窗通知** | 新消息到达时提供桌面弹窗提醒，便于及时查看重要会话，提供黑白名单功能 |
-| **私聊分析** | 统计好友间消息数量；分析消息类型与发送比例；查看消息时段分布等 |
-| **群聊分析** | 查看群成员详细信息；分析群内发言排行、活跃时段和媒体内容 |
-| **年度报告** | 生成按年统计的年度报告，或跨年度的长期历史报告 |
-| **双人报告** | 选择指定好友，基于双方聊天记录生成专属分析报告 |
-| **消息导出** | 将微信聊天记录导出为多种格式：JSON、HTML、TXT、Excel、CSV、PGSQL、ChatLab专属格式等 |
-| **朋友圈** | 解密朋友圈图片、视频、实况；导出朋友圈内容；拦截朋友圈的删除与隐藏操作；突破时间访问限制 |
-| **联系人** | 导出微信好友、群聊、公众号信息；尝试找回曾经的好友（功能尚不完善） |
-| **HTTP API 映射** | 将本地消息能力映射为 HTTP API，便于对接外部系统、自动化脚本与二次开发 |
-
----
-
-**Detailed Feature List**
-
-The current version supports the following capabilities:
-
-| Feature Module | Description |
-|----------------|-------------|
-| **Chat** | Decrypt images, videos, and Live Photos in chats (only supports Live Photos captured with Google protocol); supports **modifying** and deleting **local** messages; real-time refresh of latest messages without generating decrypted intermediate databases |
-| **Anti-Recall** | Prevent messages sent by others from being recalled |
-| **Real-time Notifications** | Desktop popup notifications when new messages arrive, convenient for timely viewing of important conversations, with blacklist/whitelist functionality |
-| **Private Chat Analysis** | Statistics on message counts between friends; analysis of message types and sending ratios; view message time distribution, etc. |
-| **Group Chat Analysis** | View detailed group member information; analyze group activity rankings, active periods, and media content |
-| **Annual Report** | Generate annual reports by year, or long-term historical reports across years |
-| **Duo Report** | Select a specific friend and generate an exclusive analysis report based on your mutual chat history |
-| **Message Export** | Export WeChat chat history to multiple formats: JSON, HTML, TXT, Excel, CSV, PGSQL, ChatLab proprietary format, etc. |
-| **Moments** | Decrypt Moments photos, videos, and Live Photos; export Moments content; intercept deletion and hiding operations in Moments; bypass time-based access restrictions |
-| **Contacts** | Export WeChat friends, group chats, and official account information; attempt to recover deleted friends (work in progress) |
-| **HTTP API** | Map local message capabilities to HTTP API for easy integration with external systems, automation scripts, and secondary development |
-
-## HTTP API
-
-> [!WARNING]
-> 此功能目前处于早期阶段，接口可能会有变动，请等待后续更新完善。
-
-WeFlow 提供本地 HTTP API 服务，支持通过接口查询消息数据，可用于与其他工具集成或二次开发。
-
-- **启用方式**：设置 → API 服务 → 启动服务
-- **默认端口**：5031
-- **访问地址**：`http://127.0.0.1:5031`
-- **支持格式**：原始 JSON 或 [ChatLab](https://chatlab.fun/) 标准格式
-
-完整接口文档：[点击查看](docs/HTTP-API.md)
-
----
-
-> [!WARNING]
-> This feature is currently in its early stages, and the interface may change. Stay tuned for future updates.
-
-WeFlow provides a local HTTP API service that supports querying message data through interfaces, which can be used for integration with other tools or secondary development.
-
-- **Enable Method**: Settings → API Service → Start Service
-- **Default Port**: 5031
-- **Access Address**: `http://127.0.0.1:5031`
-- **Supported Formats**: Raw JSON or [ChatLab](https://chatlab.fun/) standard format
-
-Complete API documentation: [Click to view](docs/HTTP-API.md)
-
-## 面向开发者
-
-如果你想从源码构建或为项目贡献代码，请遵循以下步骤：
-
-```bash
-# 1. 克隆项目到本地
-git clone https://github.com/hicccc77/WeFlow.git
-cd WeFlow
-
-# 2. 安装项目依赖
-npm install
-
-# 3. 运行应用（开发模式）
-npm run dev
+```text
+tools/wcdb-key-tool-macos/wcdb_key_tool.py
 ```
 
----
+核心流程：
 
-**For Developers**
+1. 自动扫描微信数据库目录，优先选择最近活跃的账号目录。
+2. 收集每个 `.db` 文件第一页的 16 字节 salt。
+3. 通过 LLDB 附加普通微信主进程。
+4. 在 `CCKeyDerivationPBKDF` 上设置断点。
+5. 登录微信时读取 32 字节 passphrase。
+6. 对每个数据库执行：
 
-If you want to build from source or contribute code to the project, please follow these steps:
+```text
+enc_key = PBKDF2-HMAC-SHA512(passphrase, db_salt, iterations=256000, dklen=32)
+```
+
+7. 使用数据库第一页 HMAC-SHA512 校验派生 key 是否正确。
+8. 输出 `all_keys.json`。
+
+输出文件格式示例：
+
+```json
+{
+  "passphrase": "64 hex chars",
+  "_passphrase": "64 hex chars",
+  "session/session.db": {
+    "enc_key": "64 hex chars",
+    "raw_key": "64 hex chars",
+    "salt": "32 hex chars",
+    "size_mb": 0.5
+  },
+  "_db_dir": "/path/to/wxid_xxx/db_storage"
+}
+```
+
+字段含义：
+
+- `passphrase`：给 WeFlow 导入使用。
+- `enc_key`：某个数据库实际使用的派生解密 key。
+- `raw_key`：`enc_key` 的兼容别名。
+- `_db_dir`：当前账号的 `db_storage` 路径。
+
+## 支持平台
+
+| 平台 | 状态 | 说明 |
+| --- | --- | --- |
+| Windows | 可用 | 原项目已有 Windows 支持，密钥获取依赖 `resources/key/win32/x64/wx_key.dll` |
+| macOS Apple Silicon | 可用，但密钥获取为实验性 | 本仓库加入 LLDB + passphrase 派生流程 |
+| Linux x64 | 可构建 | Linux 密钥工具思路主要来自 `tools/wcdb-key-tool-macos` 中保留的原 Linux 实现 |
+
+## 使用教程
+
+### 1. 获取源码
 
 ```bash
-# 1. Clone the project locally
-git clone https://github.com/hicccc77/WeFlow.git
-cd WeFlow
+git clone https://github.com/yuwanpai2004-create/weflow-wcdb-key.git
+cd weflow-wcdb-key
+```
 
-# 2. Install project dependencies
+### 2. 安装依赖
+
+```bash
 npm install
+```
 
-# 3. Run the application (development mode)
-npm run dev
+### 3. 启动 WeFlow
+
+开发方式启动：
+
+```bash
+npx electron .
+```
+
+或先构建：
+
+```bash
+npm run typecheck
+npm run build
+```
+
+构建产物会输出到：
+
+```text
+release/
+```
+
+### 4. macOS 获取当前微信账号密钥
+
+进入工具目录：
+
+```bash
+cd tools/wcdb-key-tool-macos
+```
+
+安装 OpenSSL：
+
+```bash
+brew install openssl@3
+```
+
+运行提取：
+
+```bash
+python3 wcdb_key_tool.py extract --output all_keys.json --timeout 180
+```
+
+运行后按提示操作：
+
+1. 打开微信设置。
+2. 退出登录当前账号。
+3. 重新扫码或输入密码登录。
+4. 如果 macOS 弹出调试授权，允许 LLDB 附加微信。
+5. 等待工具输出 `passphrase 捕获成功` 和 `密钥保存到: all_keys.json`。
+
+如果要同时解密数据库：
+
+```bash
+python3 wcdb_key_tool.py extract --output all_keys.json --decrypt --decrypt-output decrypted --timeout 180
+```
+
+### 5. macOS 导入 WeFlow
+
+打开 WeFlow 后：
+
+1. 进入设置。
+2. 打开“数据库连接”。
+3. 数据库目录选择微信的 `xwechat_files` 根目录。
+4. 点击“导入密钥文件”。
+5. 选择刚生成的 `all_keys.json`。
+
+WeFlow 会读取其中的 `passphrase`。不要手动复制某个数据库条目里的 `enc_key` 给 WeFlow，否则可能出现错误码 `-3`。
+
+### 6. 切换微信账号
+
+切换微信账号后必须重新抓取密钥。
+
+原因是不同账号的 passphrase 不通用。旧账号的 `all_keys.json` 即使格式正确，也无法打开新账号数据库。
+
+建议每个账号单独保存：
+
+```bash
+python3 wcdb_key_tool.py extract --output all_keys-account-a.json --timeout 180
+python3 wcdb_key_tool.py extract --output all_keys-account-b.json --timeout 180
+```
+
+### 7. Windows 获取密钥
+
+Windows 不走 macOS 的 LLDB 工具。原项目已有 Windows 获取逻辑：
+
+- 确保微信已安装并登录。
+- 右键 WeFlow，选择“以管理员身份运行”。
+- 数据库目录通常是：
+
+```text
+C:\Users\你的用户名\Documents\xwechat_files
+```
+
+- 在 WeFlow 设置中点击“自动获取密钥”。
+
+Windows 侧依赖：
+
+```text
+resources/key/win32/x64/wx_key.dll
+```
+
+macOS 上抓到的 passphrase 或 `all_keys.json` 不能直接给 Windows 账号使用。
+
+## 安全说明
+
+这个项目只应该用于你自己的设备和你自己的微信账号数据。
+
+请不要公开提交以下文件：
+
+- `all_keys*.json`
+- `wechat-passphrase.json`
+- `capture-*.log`
+- 解密后的 `.db`
+- WeFlow 本机配置文件
+- 任何聊天记录导出文件
+
+仓库里的 `.gitignore` 已经默认排除了这些文件。
+
+## 常见问题
+
+### 为什么会出现错误码 -3？
+
+常见原因是把单个数据库的 `enc_key` 当成 WeFlow 解密口令导入了。WeFlow 需要的是 passphrase。
+
+请导入包含 `passphrase` 字段的 `all_keys.json`，或者导入 `wechat-passphrase.json`。
+
+### 为什么换账号后默认还是旧账号密钥？
+
+旧的 `all_keys.json` 里 `_db_dir` 可能仍然指向旧账号目录。切换账号后需要重新运行 `extract`，生成当前账号自己的密钥文件。
+
+### macOS 自动捕获失败怎么办？
+
+可以按顺序排查：
+
+1. 确认微信是普通主程序，不是子进程。
+2. 确认安装了 Xcode Command Line Tools。
+3. 确认系统允许 LLDB 调试微信。
+4. 彻底退出微信后重新打开。
+5. 按提示退出登录并重新登录账号。
+6. 查看 `outputs/capture-*.log` 或工具输出定位 LLDB 停在哪一步。
+
+### `all_keys.json` 可以公开吗？
+
+不可以。它包含能打开本地微信数据库的密钥。
+
+## 项目结构
+
+```text
+.
+├── electron/                  # Electron 主进程与本地服务
+├── src/                       # React 前端
+├── resources/                 # native 库和运行时资源
+├── tools/wcdb-key-tool-macos/ # macOS/Linux WCDB 密钥工具
+├── docs/                      # HTTP API 和排障文档
+└── PUBLISHING_NOTES.md        # 发布前安全说明
 ```
 
 ## 致谢
 
-- [密语 CipherTalk](https://github.com/ILoveBingLu/miyu) 为本项目提供了基础框架
-- [WeChat-Channels-Video-File-Decryption](https://github.com/Evil0ctal/WeChat-Channels-Video-File-Decryption) 提供了视频解密相关的技术参考
+- 原 WeFlow 项目作者：[hicccc77](https://github.com/hicccc77)
+- Linux WCDB 密钥提取思路来源于 `tools/wcdb-key-tool-macos` 中保留和改造的 `wcdb-key-tool`
+- 相关思路参考：
+  - GDB/LLDB 断点捕获 passphrase
+  - SQLCipher4/WCDB PBKDF2-SHA512 派生
+  - 数据库第一页 HMAC 校验
 
----
+## License
 
-**Acknowledgments**
-
-- [CipherTalk](https://github.com/ILoveBingLu/miyu) provided the basic framework for this project
-- [WeChat-Channels-Video-File-Decryption](https://github.com/Evil0ctal/WeChat-Channels-Video-File-Decryption) provided technical references for video decryption
-
-## 支持我们
-
-如果 WeFlow 确实帮到了你，可以考虑请我们喝杯咖啡：
-
-> TRC20 **Address:** `TZCtAw8CaeARWZBfvjidCnTcfnAtf6nvS6`
-
----
-
-**Support Us**
-
-If WeFlow has truly helped you, consider buying us a coffee:
-
-> TRC20 **Address:** `TZCtAw8CaeARWZBfvjidCnTcfnAtf6nvS6`
-
-## Star History
-
-<a href="https://www.star-history.com/#hicccc77/WeFlow&type=date&legend=top-left">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=hicccc77/WeFlow&type=date&theme=dark&legend=top-left" />
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=hicccc77/WeFlow&type=date&legend=top-left" />
-    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=hicccc77/WeFlow&type=date&legend=top-left" />
-  </picture>
-</a>
-
-<div align="center">
-
----
-
-**请负责任地使用本工具，遵守相关法律法规**
-
-**Please use this tool responsibly and comply with relevant laws and regulations**
-
-</div>
+本仓库保留原项目许可证文件。请在使用、修改、再发布前自行确认原项目及其依赖的许可证要求。
