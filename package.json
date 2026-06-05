@@ -20,7 +20,9 @@
     "build": "tsc && vite build && electron-builder",
     "preview": "vite preview",
     "electron:dev": "node scripts/prepare-electron-runtime.cjs && vite --mode electron",
-    "electron:build": "npm run build"
+    "electron:build": "npm run build",
+    "weekly:wechat": "node scripts/wechat-weekly-report.cjs",
+    "weekly:wechat:init": "node scripts/wechat-weekly-report.cjs --init-config"
   },
   "dependencies": {
     "@vscode/sudo-prompt": "^9.3.2",

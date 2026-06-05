@@ -1,0 +1,50 @@
+{
+  "weflowConfigPath": "~/Library/Application Support/weflow/WeFlow-config.json",
+  "accounts": [
+    {
+      "name": "账号1",
+      "apiBaseUrl": "http://127.0.0.1:5031",
+      "accessToken": "",
+      "firstSeenCacheScope": ""
+    },
+    {
+      "name": "账号2",
+      "apiBaseUrl": "http://127.0.0.1:5032",
+      "accessToken": "",
+      "firstSeenCacheScope": ""
+    }
+  ],
+  "completedRemarkKeyword": "已完善",
+  "groups": [
+    {
+      "label": "医疗技术群",
+      "chatroomId": "",
+      "countForFriendJoin": true
+    },
+    {
+      "label": "医疗沙龙群",
+      "chatroomId": "",
+      "countForFriendJoin": false
+    },
+    {
+      "label": "企业技术群",
+      "chatroomId": "",
+      "countForFriendJoin": true
+    },
+    {
+      "label": "企业沙龙群",
+      "chatroomId": "",
+      "countForFriendJoin": false
+    },
+    {
+      "label": "教育技术群",
+      "chatroomId": "",
+      "countForFriendJoin": true
+    },
+    {
+      "label": "教育沙龙群",
+      "chatroomId": "",
+      "countForFriendJoin": false
+    }
+  ]
+}
