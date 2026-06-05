@@ -18,6 +18,7 @@ capture-*.log
 *.passphrase
 
 WeFlow-config.json
+scripts/wechat-weekly-report.config.json
 *.before-*
 
 .DS_Store

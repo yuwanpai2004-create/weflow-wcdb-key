@@ -10,7 +10,7 @@
     },
     {
       "name": "账号2",
-      "apiBaseUrl": "http://127.0.0.1:5032",
+      "apiBaseUrl": "http://127.0.0.1:5031",
       "accessToken": "",
       "firstSeenCacheScope": "账号2"
     }
@@ -20,35 +20,59 @@
     "感谢您关注天天开源软件，现在拉您进专属技术交流群，有问题欢迎随时咨询~"
   ],
   "messageScanConcurrency": 5,
+  "staffNamePrefixes": [
+    "天天开源顾问",
+    "天天开源助理",
+    "天天开源产品"
+  ],
+  "staffExactNames": [
+    "夏灵东",
+    "罗文"
+  ],
   "groups": [
     {
       "label": "医疗技术群",
-      "chatroomId": "",
+      "chatroomIds": [
+        "",
+        "",
+        ""
+      ],
       "countForFriendJoin": true
     },
     {
       "label": "医疗沙龙群",
-      "chatroomId": "",
+      "chatroomIds": [
+        "",
+        ""
+      ],
       "countForFriendJoin": false
     },
     {
       "label": "企业技术群",
-      "chatroomId": "",
+      "chatroomIds": [
+        ""
+      ],
       "countForFriendJoin": true
     },
     {
       "label": "企业沙龙群",
-      "chatroomId": "",
+      "chatroomIds": [
+        ""
+      ],
       "countForFriendJoin": false
     },
     {
       "label": "教育技术群",
-      "chatroomId": "",
+      "chatroomIds": [
+        ""
+      ],
       "countForFriendJoin": true
     },
     {
       "label": "教育沙龙群",
-      "chatroomId": "",
+      "chatroomIds": [
+        ""
+      ],
       "countForFriendJoin": false
     }
   ]

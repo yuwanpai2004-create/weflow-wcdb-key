@@ -11,6 +11,8 @@ const DEFAULT_OUTPUT_DIR = path.join(ROOT, 'outputs')
 const DEFAULT_CACHE_PATH = path.join(DEFAULT_OUTPUT_DIR, 'wechat-weekly-report-cache.json')
 const MESSAGE_PAGE_LIMIT = 10000
 const DEFAULT_COMPLETED_MESSAGE_KEYWORD = '感谢您关注天天开源软件，现在拉您进专属技术交流群，有问题欢迎随时咨询~'
+const DEFAULT_STAFF_NAME_PREFIXES = ['天天开源顾问', '天天开源助理', '天天开源产品']
+const DEFAULT_STAFF_EXACT_NAMES = ['夏灵东', '罗文']
 
 function parseArgs(argv) {
   const args = {
@@ -115,10 +117,6 @@ function toUnixSeconds(date) {
   return Math.floor(date.getTime() / 1000)
 }
 
-function toYmdCompact(date) {
-  return formatDate(date).replace(/-/g, '')
-}
-
 function normalizeBaseUrl(value) {
   return String(value || '').trim().replace(/\/+$/, '')
 }
@@ -189,8 +187,8 @@ async function fetchMessages(account, chatroomId, start, end) {
   while (true) {
     const json = await apiGet(account, '/api/v1/messages', {
       talker: chatroomId,
-      start: toYmdCompact(start),
-      end: toYmdCompact(end),
+      start: toUnixSeconds(start),
+      end: toUnixSeconds(end),
       limit: MESSAGE_PAGE_LIMIT,
       offset
     })
@@ -208,8 +206,8 @@ async function fetchMessagesByKeyword(account, talker, keyword, start, end) {
   while (true) {
     const params = {
       keyword,
-      start: toYmdCompact(start),
-      end: toYmdCompact(end),
+      start: toUnixSeconds(start),
+      end: toUnixSeconds(end),
       limit: MESSAGE_PAGE_LIMIT,
       offset
     }
@@ -221,14 +219,6 @@ async function fetchMessagesByKeyword(account, talker, keyword, start, end) {
     offset += batch.length
   }
   return messages
-}
-
-function getMessageText(message) {
-  return String(message.parsedContent || message.content || message.rawContent || '')
-}
-
-function isMessageSentByMe(message) {
-  return message.isSend === true || message.isSend === 1 || message.isSend === '1'
 }
 
 function getCompletedMessageKeywords(config) {
@@ -269,7 +259,6 @@ async function findCompletedFriendsBySentMessage(account, contacts, config, rang
     try {
       const messages = await fetchMessagesByKeyword(account, '', keyword, range.start, range.end)
       for (const message of messages) {
-        if (!isMessageSentByMe(message) || !getMessageText(message).includes(keyword)) continue
         const sessionId = String(message.sessionId || message.talker || message.talkerId || '').trim()
         const contact = byUsername.get(sessionId)
         if (contact) matchedByUsername.set(sessionId, contact)
@@ -289,10 +278,7 @@ async function findCompletedFriendsBySentMessage(account, contacts, config, rang
     const username = String(contact.username || '').trim()
     for (const keyword of keywords) {
       const messages = await fetchMessagesByKeyword(account, username, keyword, range.start, range.end)
-      const hasSentKeyword = messages.some((message) => (
-        isMessageSentByMe(message) && getMessageText(message).includes(keyword)
-      ))
-      if (hasSentKeyword) {
+      if (messages.length > 0) {
         matchedByUsername.set(username, contact)
         return
       }
@@ -300,6 +286,47 @@ async function findCompletedFriendsBySentMessage(account, contacts, config, rang
   })
 
   return { contacts: Array.from(matchedByUsername.values()), keywords }
+}
+
+async function fetchGroupMembers(account, chatroomId) {
+  const json = await apiGet(account, '/api/v1/group-members', {
+    chatroomId,
+    forceRefresh: 0
+  })
+  return Array.isArray(json.members) ? json.members : []
+}
+
+function groupChatroomIds(group) {
+  const configured = Array.isArray(group.chatroomIds) ? group.chatroomIds : [group.chatroomId]
+  return Array.from(new Set(configured.map((item) => String(item || '').trim()).filter(Boolean)))
+}
+
+function memberUsername(member) {
+  return String(member.wxid || member.username || '').trim()
+}
+
+function memberDisplayName(member) {
+  return String(
+    member.displayName ||
+    member.groupNickname ||
+    member.remark ||
+    member.nickname ||
+    member.alias ||
+    memberUsername(member)
+  ).trim()
+}
+
+function isExcludedStaffName(name, config) {
+  const value = String(name || '').trim()
+  if (!value) return false
+  const prefixes = Array.isArray(config.staffNamePrefixes)
+    ? config.staffNamePrefixes
+    : DEFAULT_STAFF_NAME_PREFIXES
+  const exactNames = Array.isArray(config.staffExactNames)
+    ? config.staffExactNames
+    : DEFAULT_STAFF_EXACT_NAMES
+  return prefixes.some((prefix) => value.startsWith(String(prefix || '').trim())) ||
+    exactNames.some((exact) => value.includes(String(exact || '').trim()))
 }
 
 function extractTagValues(xml, tagName) {
@@ -322,14 +349,20 @@ function extractTagValues(xml, tagName) {
 function extractJoinMembersFromRaw(rawContent) {
   const raw = String(rawContent || '')
   const members = []
-  const memberRegex = /<member\b[^>]*>([\s\S]*?)<\/member>/gi
-  let match
-  while ((match = memberRegex.exec(raw)) !== null) {
-    const body = match[1] || ''
-    const username = extractTagValues(body, 'username')[0] || ''
-    const nickname = extractTagValues(body, 'nickname')[0] || extractTagValues(body, 'displayname')[0] || ''
-    if (username || nickname) {
-      members.push({ username, displayName: nickname || username })
+  for (const role of ['names', 'adder']) {
+    const roleRegex = new RegExp(`<link\\s+name=["']${role}["'][^>]*>([\\s\\S]*?)<\\/link>`, 'gi')
+    let roleMatch
+    while ((roleMatch = roleRegex.exec(raw)) !== null) {
+      const memberRegex = /<member\b[^>]*>([\s\S]*?)<\/member>/gi
+      let memberMatch
+      while ((memberMatch = memberRegex.exec(roleMatch[1] || '')) !== null) {
+        const body = memberMatch[1] || ''
+        const username = extractTagValues(body, 'username')[0] || ''
+        const nickname = extractTagValues(body, 'nickname')[0] || extractTagValues(body, 'displayname')[0] || ''
+        if (username || nickname) {
+          members.push({ username, displayName: nickname || username })
+        }
+      }
     }
   }
   return members
@@ -474,40 +507,67 @@ async function collectAccount(account, config, range, options = {}) {
   const includeGroups = options.includeGroups !== false
 
   for (const group of config.groups || []) {
-    const chatroomId = String(group.chatroomId || '').trim()
-    if (!includeGroups || !chatroomId) {
+    const chatroomIds = groupChatroomIds(group)
+    if (!includeGroups || chatroomIds.length === 0) {
       groupStats.set(group.label, {
         joinPersonTimes: 0,
         activeSpeakerCount: 0,
         joinMembers: [],
+        chatroomStats: [],
         skipped: true
       })
       continue
     }
 
-    const messages = await fetchMessages(account, chatroomId, range.start, range.end)
     const activeSpeakers = new Set()
     const joinMembersAll = []
+    const chatroomStats = []
     let joinPersonTimes = 0
 
-    for (const message of messages) {
-      if (isSpeechMessage(message, chatroomId)) {
-        activeSpeakers.add(String(message.senderUsername).trim())
-      }
+    for (const chatroomId of chatroomIds) {
+      const [messages, members] = await Promise.all([
+        fetchMessages(account, chatroomId, range.start, range.end),
+        fetchGroupMembers(account, chatroomId)
+      ])
+      const memberNames = new Map(members.map((member) => [memberUsername(member), memberDisplayName(member)]))
+      const chatroomActiveSpeakers = new Set()
+      const excludedStaffNames = new Set()
+      let chatroomJoinPersonTimes = 0
 
-      const joinMembers = extractJoinMembers(message)
-      if (joinMembers.length > 0) {
-        joinPersonTimes += joinMembers.length
-        joinMembersAll.push(...joinMembers)
+      for (const message of messages) {
+        if (isSpeechMessage(message, chatroomId)) {
+          const sender = String(message.senderUsername).trim()
+          const senderName = memberNames.get(sender) || sender
+          if (isExcludedStaffName(senderName, config)) excludedStaffNames.add(senderName)
+          else {
+            activeSpeakers.add(sender)
+            chatroomActiveSpeakers.add(sender)
+          }
+        }
+
+        const joinMembers = extractJoinMembers(message)
+        if (joinMembers.length > 0) {
+          joinPersonTimes += joinMembers.length
+          chatroomJoinPersonTimes += joinMembers.length
+          joinMembersAll.push(...joinMembers)
+        }
       }
+      chatroomStats.push({
+        chatroomId,
+        joinPersonTimes: chatroomJoinPersonTimes,
+        activeSpeakerCount: chatroomActiveSpeakers.size,
+        excludedStaffNames: Array.from(excludedStaffNames).sort()
+      })
     }
 
     groupStats.set(group.label, {
       joinPersonTimes,
       activeSpeakerCount: activeSpeakers.size,
       joinMembers: joinMembersAll,
+      chatroomStats,
       skipped: false
     })
+    console.log(`  ${group.label}: ${chatroomIds.length} 个群，进群 ${joinPersonTimes} 人次，群友发言 ${activeSpeakers.size} 人`)
   }
 
   return {
@@ -530,6 +590,7 @@ function serializeAccountResult(result) {
       joinPersonTimes: Number(stat.joinPersonTimes || 0),
       activeSpeakerCount: Number(stat.activeSpeakerCount || 0),
       joinMembers: Array.isArray(stat.joinMembers) ? stat.joinMembers : [],
+      chatroomStats: Array.isArray(stat.chatroomStats) ? stat.chatroomStats : [],
       skipped: Boolean(stat.skipped)
     }
   }
@@ -551,6 +612,7 @@ function deserializeAccountResult(raw) {
       joinPersonTimes: Number(stat?.joinPersonTimes || 0),
       activeSpeakerCount: Number(stat?.activeSpeakerCount || 0),
       joinMembers: Array.isArray(stat?.joinMembers) ? stat.joinMembers : [],
+      chatroomStats: Array.isArray(stat?.chatroomStats) ? stat.chatroomStats : [],
       skipped: Boolean(stat?.skipped)
     })
   }
@@ -919,6 +981,21 @@ function runSelfTest() {
   assertEqual(friendRow.length, 28, '加好友周报输出列数')
   assertEqual(groupRow.length, 19, '社群周报输出列数')
   assertEqual(activeRow.length, 8, '群友互动周报输出列数')
+  assertEqual(groupChatroomIds({ chatroomIds: ['g1@chatroom', 'g2@chatroom', 'g1@chatroom'] }).length, 2, '多群配置去重')
+  assertEqual(isExcludedStaffName('天天开源助理-小王', {}), true, '工作人员前缀排除')
+  assertEqual(isExcludedStaffName('罗文', {}), true, '工作人员姓名排除')
+  assertEqual(isExcludedStaffName('天天开源商务-罗文', {}), true, '工作人员姓名关键字排除')
+  assertEqual(isExcludedStaffName('普通群友', {}), false, '普通群友保留')
+  const joinXml = `
+    <link name="username"><member><username><![CDATA[inviter]]></username><nickname><![CDATA[邀请人]]></nickname></member></link>
+    <link name="names"><member><username><![CDATA[new_member]]></username><nickname><![CDATA[新人]]></nickname></member></link>
+    <link name="from"><member><username><![CDATA[sharer]]></username><nickname><![CDATA[分享人]]></nickname></member></link>
+    <link name="adder"><member><username><![CDATA[scan_member]]></username><nickname><![CDATA[扫码新人]]></nickname></member></link>
+  `
+  const parsedJoinMembers = extractJoinMembersFromRaw(joinXml)
+  assertEqual(parsedJoinMembers.length, 2, '进群解析只统计被邀请人和扫码入群人')
+  assertEqual(parsedJoinMembers[0].username, 'new_member', '邀请人不计入进群')
+  assertEqual(parsedJoinMembers[1].username, 'scan_member', '分享人不计入扫码进群')
   console.log('self-test ok')
 }
 
