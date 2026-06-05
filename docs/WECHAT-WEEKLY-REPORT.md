@@ -27,7 +27,7 @@ scripts/wechat-weekly-report.config.json
 
 - `accounts[].apiBaseUrl`：每个账号对应的 WeFlow API 地址。
 - `accounts[].accessToken`：如果 API 服务开启了 Token，就填这里。
-- `accounts[].firstSeenCacheScope`：多个账号时建议填写，用于区分各账号的好友首次出现缓存。
+- `accounts[].firstSeenCacheScope`：多个账号时必须区分，通常直接填账号名，用于区分各账号的好友首次出现缓存。
 - `groupStatsAccountName`：只用哪个账号统计社群进群和群友互动，通常填负责维护社群的那个微信账号名。
 - `groups[].chatroomId`：各个群对应的 `xxx@chatroom`。
 

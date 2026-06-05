@@ -6,13 +6,13 @@
       "name": "账号1",
       "apiBaseUrl": "http://127.0.0.1:5031",
       "accessToken": "",
-      "firstSeenCacheScope": ""
+      "firstSeenCacheScope": "账号1"
     },
     {
       "name": "账号2",
       "apiBaseUrl": "http://127.0.0.1:5032",
       "accessToken": "",
-      "firstSeenCacheScope": ""
+      "firstSeenCacheScope": "账号2"
     }
   ],
   "completedRemarkKeyword": "已完善",
